@@ -11,6 +11,13 @@ import {
   DialogTitle,
 } from "~/components/ui/dialog";
 import { Input } from "~/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
 import { Switch } from "~/components/ui/switch";
 import { Textarea } from "~/components/ui/textarea";
 import { ScrollArea } from "~/components/ui/scroll-area";
@@ -24,6 +31,7 @@ import type {
   ModelModality,
   ModelType,
   ProviderModel,
+  ProviderOverwrite,
 } from "~/types/settings";
 
 // Mirrors Android's ModelType segmented selector (CHAT/IMAGE/EMBEDDING). Server-side audit
@@ -280,8 +288,10 @@ export function ModelEditDialog({
               <AdvancedTab
                 headers={toArray<CustomHeader>(draft.customHeaders)}
                 bodies={toArray<CustomBody>(draft.customBodies)}
+                providerOverwrite={draft.providerOverwrite ?? null}
                 onHeadersChange={(headers) => update("customHeaders", headers)}
                 onBodiesChange={(bodies) => update("customBodies", bodies)}
+                onProviderOverwriteChange={(overwrite) => update("providerOverwrite", overwrite)}
               />
             )}
             {tab === TAB_TOOLS && (
@@ -459,11 +469,13 @@ function BasicTab({
 interface AdvancedTabProps {
   headers: CustomHeader[];
   bodies: CustomBody[];
+  providerOverwrite: ProviderOverwrite | null | undefined;
   onHeadersChange: (headers: CustomHeader[]) => void;
   onBodiesChange: (bodies: CustomBody[]) => void;
+  onProviderOverwriteChange: (overwrite: ProviderOverwrite | null) => void;
 }
 
-function AdvancedTab({ headers, bodies, onHeadersChange, onBodiesChange }: AdvancedTabProps) {
+function AdvancedTab({ headers, bodies, providerOverwrite, onHeadersChange, onBodiesChange, onProviderOverwriteChange }: AdvancedTabProps) {
   const updateHeader = (index: number, patch: Partial<CustomHeader>) => {
     onHeadersChange(headers.map((header, i) => (i === index ? { ...header, ...patch } : header)));
   };
@@ -486,6 +498,10 @@ function AdvancedTab({ headers, bodies, onHeadersChange, onBodiesChange }: Advan
 
   return (
     <div className="space-y-5 py-3">
+      <ProviderOverwriteSection
+        overwrite={providerOverwrite ?? null}
+        onChange={onProviderOverwriteChange}
+      />
       <section className="space-y-2">
         <div className="flex items-center justify-between">
           <div>
@@ -565,6 +581,126 @@ function AdvancedTab({ headers, bodies, onHeadersChange, onBodiesChange }: Advan
         )}
       </section>
     </div>
+  );
+}
+
+const PROVIDER_OVERWRITE_TYPES: { value: ProviderOverwrite["type"]; label: string }[] = [
+  { value: "openai", label: "OpenAI 兼容" },
+  { value: "claude", label: "Anthropic Claude" },
+  { value: "google", label: "Google Gemini" },
+];
+
+const DEFAULT_BASE_URLS: Record<string, string> = {
+  openai: "https://api.openai.com/v1",
+  claude: "https://api.anthropic.com/v1",
+  google: "https://generativelanguage.googleapis.com/v1beta",
+};
+
+/**
+ * UI for editing `Model.providerOverwrite`. Two-state widget:
+ *   - When `overwrite` is null → show a "配置供应商覆盖" button to start using one.
+ *   - When `overwrite` is set → show inline editable fields (type, name, baseUrl, apiKey)
+ *     and a "清除覆盖" button to remove it.
+ *
+ * Mirrors Android's `ProviderOverrideSettings` composable
+ * (SettingProviderDetailPage.kt:1423-1565). The override merge happens server-side in
+ * `findModel()` (pc-server/server.ts) — when this object is non-null on a model, the
+ * model's outbound request uses these credentials instead of the parent provider's.
+ */
+function ProviderOverwriteSection({
+  overwrite,
+  onChange,
+}: {
+  overwrite: ProviderOverwrite | null;
+  onChange: (next: ProviderOverwrite | null) => void;
+}) {
+  const enable = () => {
+    onChange({
+      type: "openai",
+      name: "供应商覆盖",
+      baseUrl: DEFAULT_BASE_URLS.openai,
+      apiKey: "",
+    });
+  };
+  const update = (patch: Partial<ProviderOverwrite>) => {
+    if (!overwrite) return;
+    onChange({ ...overwrite, ...patch });
+  };
+  const clear = () => onChange(null);
+
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm font-medium">供应商覆盖</div>
+          <div className="text-xs text-muted-foreground">
+            为这一个模型单独指定 baseUrl 与 API Key。设置后该模型的请求会走这里的配置，**不**走当前供应商的默认配置——典型用途是把某个模型走自建 OpenAI 兼容网关。
+          </div>
+        </div>
+        {overwrite ? (
+          <Button type="button" variant="outline" size="sm" onClick={clear}>
+            <Trash2 className="size-4" />
+            清除覆盖
+          </Button>
+        ) : (
+          <Button type="button" variant="outline" size="sm" onClick={enable}>
+            <Plus className="size-4" />
+            配置覆盖
+          </Button>
+        )}
+      </div>
+      {overwrite ? (
+        <div className="space-y-3 rounded-md border p-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <div className="text-xs font-medium">协议类型</div>
+              <Select
+                value={overwrite.type}
+                onValueChange={(value) => {
+                  // Switching type also resets baseUrl to that protocol's default — saves
+                  // the user from having to hand-clear an OpenAI URL when switching to Claude.
+                  const defaultUrl = DEFAULT_BASE_URLS[value] ?? overwrite.baseUrl;
+                  update({ type: value, baseUrl: overwrite.baseUrl === DEFAULT_BASE_URLS[overwrite.type] ? defaultUrl : overwrite.baseUrl });
+                }}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {PROVIDER_OVERWRITE_TYPES.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs font-medium">显示名称</div>
+              <Input
+                value={overwrite.name}
+                onChange={(event) => update({ name: event.target.value })}
+                placeholder="供应商覆盖"
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <div className="text-xs font-medium">Base URL</div>
+            <Input
+              value={overwrite.baseUrl}
+              onChange={(event) => update({ baseUrl: event.target.value })}
+              placeholder="例如 https://api.openai.com/v1"
+            />
+          </div>
+          <div className="space-y-1">
+            <div className="text-xs font-medium">API Key</div>
+            <Input
+              type="password"
+              value={overwrite.apiKey}
+              onChange={(event) => update({ apiKey: event.target.value })}
+              placeholder="sk-..."
+              autoComplete="off"
+            />
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

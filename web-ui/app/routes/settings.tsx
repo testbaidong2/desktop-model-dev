@@ -2191,7 +2191,7 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
           <div className="rounded-md border p-3">
             <div className="text-sm font-medium">拓展状态摘要</div>
             <div className="mt-2 grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
-              <div>模式注入: {(draft.modeInjectionIds ?? []).length}</div>
+              <div>提示词注入: {(draft.modeInjectionIds ?? []).length}</div>
               <div>世界书: {(draft.lorebookIds ?? []).length}</div>
               <div>MCP: {(draft.mcpServers ?? []).length}</div>
               <div>Local tools: {Array.isArray(draft.localTools) ? draft.localTools.length : 0}</div>
@@ -3330,11 +3330,11 @@ function McpExtensionsSection({ settings, onSettings }: { settings: Settings; on
 
   return (
     <>
-      <SectionHeader icon={CopyPlus} title="MCP 与拓展" subtitle="管理 MCP 服务器、模式注入、世界书、快捷消息与 Agent Skills。" />
+      <SectionHeader icon={CopyPlus} title="MCP 与拓展" subtitle="管理 MCP 服务器、提示词注入、世界书、快捷消息与 Agent Skills。" />
       <div className="mb-4 flex flex-wrap items-center gap-2">
         {([
           ["mcp", "MCP", CopyPlus],
-          ["mode", "模式注入", WandSparkles],
+          ["mode", "提示词注入", WandSparkles],
           ["lorebook", "世界书", Database],
           ["quick", "快捷消息", MessageSquareText],
           ["skills", "Skills", Bot],
@@ -3512,13 +3512,26 @@ function McpServerEditor({ settings, assistant, onSettings }: { settings: Settin
           </div>
         );
       }}
-      onCreate={() => {
+      onCreate={async () => {
+        // Save the new item server-side BEFORE touching any state. Without the immediate
+        // POST, the 800 ms debounce loses the race against the `[selectedId, settings.X]`
+        // realignment effect at line 3410 — which fires when `setSelectedId(next.id)`
+        // changes the dep, doesn't find the new id in `servers` (settings hasn't refreshed
+        // yet), and snaps selectedId back to servers[0]. End result: the new item is
+        // silently discarded. Eager-saving guarantees the new item lands in `settings`
+        // before the realignment effect runs, so it finds and keeps the just-created id.
         const next = createMcpServer();
-        setSelectedId(String(next.id));
-        setDraft(next);
-        setHeadersText("[]");
-        setToolsText("[]");
-        dirtyRef.current = true;
+        try {
+          await api.post("settings/mcp-server/detail", next);
+          await pullSettings(onSettings);
+          setSelectedId(String(next.id));
+          setDraft(clone(next));
+          setHeadersText("[]");
+          setToolsText("[]");
+          dirtyRef.current = false;
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "新增 MCP 服务器失败");
+        }
       }}
     >
       <div className="space-y-4">
@@ -3619,13 +3632,13 @@ function ModeInjectionEditor({ settings, assistant, onSettings }: { settings: Se
       deletePath="settings/mode-injection"
       reorderPath="settings/mode-injection/reorder"
       createItem={createModeInjection}
-      title="模式注入"
+      title="提示词注入"
     />
   );
 }
 
 function createModeInjection(): Record<string, unknown> {
-  return { id: crypto.randomUUID(), type: "mode", name: "模式注入", enabled: true, priority: 0, position: "after_system_prompt", role: "USER", injectDepth: 4, content: "" };
+  return { id: crypto.randomUUID(), type: "mode", name: "提示词注入", enabled: true, priority: 0, position: "after_system_prompt", role: "USER", injectDepth: 4, content: "" };
 }
 
 function createLorebookEntry(): Record<string, unknown> {
@@ -3894,11 +3907,23 @@ function LorebookEditor({ settings, assistant, onSettings }: { settings: Setting
         onSettings({ ...settings, lorebooks: next as unknown as Settings["lorebooks"] });
         await api.post("settings/lorebook/reorder", { ids: next.map((item) => String(item.id)) });
       }}
-      onCreate={() => {
+      onCreate={async () => {
+        // Eager-save pattern — same race-condition rationale as MCP and ModeInjection
+        // (see settings.tsx:3515 and the PromptItemEditor onCreate comment). The original
+        // setState + dirtyRef=true approach loses the new lorebook because the
+        // `[selectedId, settings.lorebooks]` realignment effect at line 3857 fires when
+        // selectedId changes, doesn't find the new id in settings (not saved yet), and
+        // snaps the user back to lorebooks[0] — silently dropping the new entry.
         const next = createLorebook();
-        setSelectedId(String(next.id));
-        setDraft(next);
-        dirtyRef.current = true;
+        try {
+          await api.post("settings/lorebook/detail", next);
+          await pullSettings(onSettings);
+          setSelectedId(String(next.id));
+          setDraft(next);
+          dirtyRef.current = false;
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "新增世界书失败");
+        }
       }}
     >
       <div className="space-y-4">
@@ -4155,11 +4180,27 @@ function PromptItemEditor({
         onSettings({ ...settings, modeInjections: next as unknown as Settings["modeInjections"] });
         await api.post(reorderPath, { ids: next.map((item) => String(item.id)) });
       }}
-      onCreate={() => {
+      onCreate={async () => {
+        // Eager save — same pattern as McpServerEditor.onCreate. The original code relied
+        // on the 700 ms debounce, but two race conditions guaranteed the save never fired:
+        //   1. The `[selectedId, items]` effect at line 4108 unconditionally reset
+        //      `dirtyRef.current = false` when selectedId changed, cancelling the pending
+        //      save.
+        //   2. The wrapper component's `[selectedId, settings.modeInjections]` effect
+        //      (e.g. line 3600) couldn't find the new id in settings and snapped
+        //      selectedId back to items[0], silently overwriting the draft.
+        // Saving first removes both races: by the time we touch any state, the new item
+        // is already in settings, so both effects behave correctly.
         const next = createItem();
-        setSelectedId(String(next.id));
-        setDraft(next);
-        dirtyRef.current = true;
+        try {
+          await api.post(savePath, next);
+          await pullSettings(onSettings);
+          setSelectedId(String(next.id));
+          setDraft(next);
+          dirtyRef.current = false;
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : `新增${title}失败`);
+        }
       }}
     >
       <div className="space-y-4">
@@ -5297,7 +5338,7 @@ function AboutSection() {
   // Hard-coded current version — must match pc-server/server.ts:APP_VERSION and
   // web-ui/src-tauri/tauri.conf.json:version. The update checker compares this against
   // the latest GitHub release.
-  const APP_VERSION = "1.0.3";
+  const APP_VERSION = "1.0.4";
 
   type UpdateInfo = {
     current: string;

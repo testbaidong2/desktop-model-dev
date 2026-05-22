@@ -1,5 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
 import process from "node:process";
 import { gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
@@ -380,7 +381,7 @@ const statePath = join(dataDir, "state.json");
 // MUST be kept in sync with web-ui/src-tauri/tauri.conf.json's `version` field. The update
 // checker compares this against the latest GitHub release tag and the version is also shown
 // verbatim in the About page. If you bump tauri.conf.json's version, bump this too.
-const APP_VERSION = "1.0.3";
+const APP_VERSION = "1.0.4";
 
 /** Compare two dotted-version strings. Returns -1/0/1 like `a - b`. Tolerates "v" prefix,
  *  missing patch parts (treated as 0), and non-numeric trailing labels (compared as strings). */
@@ -1310,43 +1311,88 @@ setInterval(applyEffectiveProxy, SYSTEM_PROXY_REFRESH_MS).unref();
 
 
 
-function saveState() {
-  if (pendingThrottledSave) {
-    clearTimeout(pendingThrottledSave);
-    pendingThrottledSave = null;
-  }
+// Async write queue — serializes saves so two callers can't race the temp-file rename
+// dance, but each write is non-blocking on the event loop so other HTTP handlers (image
+// fetches, conversation GETs, streaming SSE) can continue while disk I/O is in flight.
+// Before this change, `saveState()` was fully synchronous (writeFileSync + busy-wait retry
+// + pretty-printed JSON.stringify of the entire state). On a state.json grown into the
+// 100+ MB range after an Android backup import, a single save would block the event loop
+// for seconds — every concurrent request queued behind it, eventually tripping ky's 30 s
+// timeout. The user-visible symptom: a streaming reply freezes, then ALL conversation
+// GETs fail with "Request timed out" and the app becomes unusable until restart.
+let activeSaveStatePromise: Promise<void> | null = null;
+let coalescedSaveRequested = false;
+
+async function performStateSave(): Promise<void> {
   lastSaveStateMs = Date.now();
   mkdirSync(dataDir, { recursive: true });
-  const content = JSON.stringify(state, null, 2);
+  // No pretty-printing — state.json is read by the server, not humans. On a large state
+  // (post-import), the indentation alone can double serialize CPU cost.
+  const content = JSON.stringify(state);
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const tempPath = `${statePath}.${process.pid}.${Date.now()}.${attempt}.tmp`;
     try {
-      writeFileSync(tempPath, content);
-      renameSync(tempPath, statePath);
+      // Bun.write is non-blocking — yields to the event loop while the OS does the I/O.
+      await Bun.write(tempPath, content);
+      // fs.promises.rename is also non-blocking. The atomic temp-then-rename pattern
+      // protects against torn writes if the process is killed mid-save.
+      await fsPromises.rename(tempPath, statePath);
       return;
     } catch (errorValue) {
       lastError = errorValue;
-      try {
-        rmSync(tempPath, { force: true });
-      } catch {
-        // Ignore cleanup failures.
-      }
-      const start = Date.now();
-      while (Date.now() - start < 50 * (attempt + 1)) {
-        // Tiny synchronous backoff keeps state writes ordered on Windows.
-      }
+      try { await fsPromises.unlink(tempPath); } catch { /* cleanup best-effort */ }
+      // Backoff via setTimeout/await rather than busy-wait — frees the event loop during
+      // the retry delay. Windows occasionally holds locks on state.json briefly (e.g.
+      // virus scanners), so the retries are still worth keeping.
+      await new Promise<void>((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
     }
   }
   try {
-    writeFileSync(statePath, content);
+    await Bun.write(statePath, content);
   } catch {
-    try {
-      writeFileSync(`${statePath}.recovery-${Date.now()}.json`, content);
-    } catch {
-      // Keep generation alive even when Windows temporarily locks the data file.
-    }
+    try { await Bun.write(`${statePath}.recovery-${Date.now()}.json`, content); } catch { /* last-ditch */ }
     console.warn("Failed to save state", lastError);
+  }
+}
+
+function saveState(): void {
+  // Cancel any pending throttled save — its work is about to be done by this call.
+  if (pendingThrottledSave) {
+    clearTimeout(pendingThrottledSave);
+    pendingThrottledSave = null;
+  }
+  // If a save is already in flight, mark that another save is needed; it'll run when
+  // the current one completes. Coalesces a burst of saves into at most two writes
+  // (current + one trailing) instead of N synchronous serializations.
+  if (activeSaveStatePromise) {
+    coalescedSaveRequested = true;
+    return;
+  }
+  const run = async (): Promise<void> => {
+    try {
+      await performStateSave();
+    } finally {
+      if (coalescedSaveRequested) {
+        coalescedSaveRequested = false;
+        // Snapshot the latest state — performStateSave reads `state` at call time, so
+        // re-running it will pick up any changes that landed during the previous write.
+        activeSaveStatePromise = run();
+      } else {
+        activeSaveStatePromise = null;
+      }
+    }
+  };
+  activeSaveStatePromise = run();
+  // Surface unhandled rejections to the console rather than crashing the process —
+  // every saveState call is treated as fire-and-forget by the existing call sites.
+  activeSaveStatePromise.catch((err) => console.warn("saveState failed", err));
+}
+
+/** Used by graceful shutdown paths to ensure the final write completes on disk. */
+async function flushSaveState(): Promise<void> {
+  if (activeSaveStatePromise) {
+    try { await activeSaveStatePromise; } catch { /* already logged */ }
   }
 }
 
@@ -1446,7 +1492,20 @@ function broadcastNodeUpdateNow(conversation: Conversation, node: MessageNode) {
   for (const client of conversationClients.get(conversation.id) ?? []) {
     client.enqueue(sseFrame("node_update", payload));
   }
-  broadcastList();
+  // NOTE: deliberately NOT calling broadcastList() here. This used to fire on every chunk
+  // during streaming (~30 times/sec via scheduleNodeBroadcast), which made the conversation
+  // list SSE issue an `invalidate` event 30x/sec, which made the frontend re-fetch
+  // `/api/conversations/p?offset=0&limit=30` 30x/sec. With Chrome's 6-connection-per-host
+  // limit, that storm was rapidly exhausting the frontend's HTTP connection pool, queuing
+  // any other request (including the conversation-detail GET) past ky's 30s timeout. That
+  // matches the user-reported "even fresh conversations stall" + "list also times out"
+  // pattern that the saveState-blocking fix alone couldn't explain.
+  //
+  // The conversation list only needs to refresh when the metadata it actually displays
+  // changes (title, isPinned, isGenerating-state-transition, last-message-preview). Per-
+  // chunk content updates don't change any of those. We now call broadcastList() at
+  // generation start (server.ts:10358), generation end (server.ts:9601), and on explicit
+  // mutations (rename, pin, delete) — not on every streamed chunk.
 }
 
 // Non-streaming call sites (final flush, tool approval, etc.) flush immediately so callers see
@@ -1457,8 +1516,14 @@ function broadcastNodeUpdate(conversation: Conversation, node: MessageNode) {
 }
 
 function abortConversationGeneration(conversationId: string) {
+  const wasGenerating = generating.has(conversationId);
   generating.get(conversationId)?.abort();
   generating.delete(conversationId);
+  // Mirror completeConversationGeneration: when the user manually stops generation,
+  // the sidebar's per-conversation streaming indicator also needs to flip off, and
+  // since broadcastNodeUpdateNow no longer calls broadcastList on every chunk we
+  // have to refresh the list explicitly here.
+  if (wasGenerating) broadcastList();
 }
 
 function deleteConversationsById(ids: Set<string>) {
@@ -1495,7 +1560,23 @@ function findModel(modelId: string | null | undefined) {
   const wanted = modelId || state.settings.chatModelId;
   for (const provider of state.settings.providers) {
     const modelItem = provider.models.find((item) => item.id === wanted || item.modelId === wanted);
-    if (modelItem) return { provider, model: modelItem };
+    if (modelItem) {
+      // Per-model provider override: if this model carries a `providerOverwrite` object,
+      // it replaces the parent provider entirely for outbound requests (baseUrl, apiKey,
+      // type, etc.). Mirrors Android's `Model.findProvider()` (PreferencesStore.kt:648):
+      //   if (providerOverwrite != null) return providerOverwrite.copyProvider(models=[])
+      // We spread the override on top of the parent so any fields the override omits
+      // (like `enabled`, `id`, `testPassed`) fall through to the parent — these are
+      // bookkeeping fields the override doesn't need to redefine. `models: []` is also
+      // forced because the override carries its own (irrelevant) model list in Android;
+      // we use the parent's `modelItem` regardless.
+      const overwrite = (modelItem as { providerOverwrite?: Partial<Provider> | null }).providerOverwrite;
+      if (overwrite && typeof overwrite === "object" && overwrite.type) {
+        const effectiveProvider = { ...provider, ...overwrite, id: provider.id, models: [] } as Provider;
+        return { provider: effectiveProvider, model: modelItem };
+      }
+      return { provider, model: modelItem };
+    }
   }
   return { provider: state.settings.providers.find((item) => item.enabled) ?? state.settings.providers[0], model: model("auto", "Auto") };
 }
@@ -5979,7 +6060,11 @@ async function readProviderTestStream(response: Response, providerItem: Provider
     if (preview.length > 6000) preview = `${preview.slice(0, 6000)}...`;
   };
   const readWithIdleTimeout = async () => {
-    const timeoutMs = 600_000;
+    // 120s between upstream chunks before declaring the connection dead. Was 10 minutes;
+    // dropped to 2 minutes so a half-open TCP / Cloudflare hiccup releases the connection
+    // (and its slot in the frontend's 6-per-host pool) much faster. Reasoning models can
+    // pause 30+s mid-thought but rarely 2 min — well within tolerance.
+    const timeoutMs = 120_000;
     let timeout: ReturnType<typeof setTimeout> | null = null;
     try {
       return await Promise.race([
@@ -7403,7 +7488,10 @@ async function readOpenAiStream(
   let buffer = "";
   let full = "";
   const readWithIdleTimeout = async () => {
-    const timeoutMs = 600_000;
+    // Matches the 120s idle timeout in the other streaming reader (see server.ts:6063
+    // for full rationale — gist: drop from 10min to 2min so hung upstream connections
+    // release frontend pool slots before they impact unrelated requests).
+    const timeoutMs = 120_000;
     let timeout: ReturnType<typeof setTimeout> | null = null;
     try {
       return await Promise.race([
@@ -8060,6 +8148,19 @@ async function fetchOpenAiTextStreaming(
 
     const toolMessages = [];
     for (const toolCall of result.toolCalls) {
+      // Skip sparse-array holes. The Responses API stream parser indexes into toolCalls[]
+      // by `output_index` (server.ts:7354) — when the model emits both a function_call
+      // (e.g. user-defined tool) and a web_search_call in the same response, the indices
+      // are non-contiguous and the resulting array has `undefined` slots. `for...of` over
+      // a sparse array yields those `undefined`s, which crashed at `toolCall.id` with
+      // "undefined is not an object" (the gpt-5.5 + web_search bug reported by users).
+      // The web_search_call is handled server-side by OpenAI itself — it doesn't need a
+      // local tool execution round-trip — so skipping holes is the correct behavior.
+      if (!toolCall || typeof toolCall !== "object") continue;
+      // Also skip entries with no function name — those are phantom deltas left over
+      // from non-function output items (e.g. arguments.delta events that arrived for an
+      // output_index that turned out to be a web_search_call).
+      if (!toolCall.function?.name) continue;
       const toolPart = {
         type: "tool",
         toolCallId: String(toolCall.id ?? id()),
@@ -9319,6 +9420,14 @@ function cloneConversation(conversation: Conversation): Conversation {
 function completeConversationGeneration(conversationId: string, controller: AbortController) {
   if (generating.get(conversationId) === controller) {
     generating.delete(conversationId);
+    // The generating Map drives the sidebar's per-conversation streaming indicator
+    // (rendered via the conversations-list SSE). Now that broadcastNodeUpdateNow no
+    // longer pings the list on every chunk (see comment at server.ts:1495), we have
+    // to explicitly refresh on the false→true and true→false transitions so the
+    // indicator turns on/off. Caller `generateAnswer` calls broadcastConversation
+    // at start which already touches broadcastList, and we cover the end transition
+    // right here.
+    broadcastList();
   }
 }
 
@@ -10570,13 +10679,36 @@ async function routeApi(request: Request, url: URL) {
   if (fileContent) {
     const entry = state.files.find((item) => item.id === Number(fileContent[1]));
     if (!entry || !existsSync(entry.path)) return error("File not found", 404);
-    return new Response(Bun.file(entry.path), { headers: { "Content-Type": entry.mime } });
+    // File IDs are integer primary keys assigned at upload time; content for a given id
+    // never changes (upload is write-once). The `immutable` directive tells the browser
+    // never to revalidate this URL, so switching back to a previously-viewed conversation
+    // hits the in-memory cache instantly instead of round-tripping to localhost.
+    // Without this, the browser used heuristic caching (effectively none for /api/...
+    // paths) and the user saw every image re-load on every conversation switch — even
+    // ones they'd viewed seconds earlier. The ETag is a belt-and-suspenders fallback for
+    // browsers that disregard `immutable`.
+    return new Response(Bun.file(entry.path), {
+      headers: {
+        "Content-Type": entry.mime,
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "ETag": `"${entry.id}"`,
+      },
+    });
   }
   const fileByPath = path.match(/^files\/path\/(.+)$/);
   if (fileByPath) {
     const target = safeDataFilePath(fileByPath[1]);
     if (!target) return error("File not found", 404);
-    return new Response(Bun.file(target), { headers: { "Content-Type": mime(target) } });
+    // Same caching rationale as the by-id endpoint above. Path-based fetches typically
+    // come from Android-imported messages whose URL references survived migration —
+    // those resolved paths point to immutable on-disk files.
+    return new Response(Bun.file(target), {
+      headers: {
+        "Content-Type": mime(target),
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "ETag": `"path:${fileByPath[1]}"`,
+      },
+    });
   }
   const fileDelete = path.match(/^files\/(\d+)$/);
   if (fileDelete && request.method === "DELETE") {

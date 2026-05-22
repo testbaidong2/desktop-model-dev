@@ -133,6 +133,22 @@ export interface CustomBody {
   value: unknown;
 }
 
+// Mirrors Android's `Model.providerOverwrite: ProviderSetting?`. When set, a per-model
+// override replaces the model's parent provider entirely at request-build time — useful
+// when one model in a provider needs a different baseUrl / API key (e.g. routing through
+// a custom OpenAI-compatible gateway for just that model).
+//
+// The four fields below are the minimum we surface in the UI. The backend stores and
+// reads whatever else is here too (the catch-all `[key: string]: unknown` covers future
+// fields like custom headers per-override).
+export interface ProviderOverwrite {
+  type: "openai" | "claude" | "google" | string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  [key: string]: unknown;
+}
+
 export interface ProviderModel {
   id: string;
   modelId: string;
@@ -144,6 +160,12 @@ export interface ProviderModel {
   tools?: BuiltInTool[];
   customHeaders?: CustomHeader[];
   customBodies?: CustomBody[];
+  /**
+   * Per-model provider override. `null` / `undefined` means "use the parent provider".
+   * When set, the entire upstream request (baseUrl, apiKey, etc.) goes through this
+   * override instead. See server.ts:findModel for the request-build merge logic.
+   */
+  providerOverwrite?: ProviderOverwrite | null;
   /**
    * `true` for models added via the manual "+" dialog. Used to decide whether to lock the
    * `modelId` field in the edit dialog: manually-added models keep editable IDs (the user
