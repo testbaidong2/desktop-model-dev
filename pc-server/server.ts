@@ -11013,7 +11013,7 @@ function updateSettings(next: Settings) {
 async function routeApi(request: Request, url: URL) {
   const path = url.pathname.replace(/^\/api\/?/, "");
 
-  if (path === "health") return json({ ok: true, version: "pc-dev", dataDir });
+  if (path === "health") return json({ ok: true, version: APP_VERSION, dataDir });
   if (path === "ai-icon" && request.method === "GET") {
     const name = url.searchParams.get("name")?.trim();
     if (!name) return error("Missing name", 400);
