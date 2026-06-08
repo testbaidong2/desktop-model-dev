@@ -6169,16 +6169,208 @@ function extractStoredFileText(entry: StoredFile) {
   const mimeValue = entry.mime.toLowerCase();
   try {
     if (mimeValue === "application/epub+zip" || name.endsWith(".epub")) return extractEpubText(entry.path);
+    if (mimeValue === "application/pdf" || name.endsWith(".pdf")) return extractPdfText(entry.path);
+    if (mimeValue === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || name.endsWith(".docx")) return extractDocxText(entry.path);
+    if (mimeValue === "application/vnd.openxmlformats-officedocument.presentationml.presentation" || name.endsWith(".pptx")) return extractPptxText(entry.path);
     if (
       mimeValue.startsWith("text/") ||
       /\.(txt|md|markdown|csv|tsv|json|jsonl|yaml|yml|xml|html|htm|css|js|ts|tsx|jsx|py|java|kt|rs|go|c|cpp|h|hpp|cs|php|rb|sh|ps1|sql)$/i.test(name)
     ) {
       return readFileSync(entry.path, "utf8").slice(0, 240_000);
     }
-  } catch {
+  } catch (err) {
+    console.warn(`[document] extract failed for ${entry.fileName}:`, err);
     return "";
   }
   return "";
+}
+
+// --- Document parsers: aligned with Android's document module ---
+
+function extractPdfText(pathValue: string) {
+  // Android uses MuPDF; for Bun we extract text from FlateDecode streams.
+  // Covers the vast majority of text-heavy PDFs.
+  const buf = readFileSync(pathValue);
+  const text: string[] = [];
+  const streamRe = /stream\r?\n/g;
+  let match: RegExpExecArray | null;
+  while ((match = streamRe.exec(buf.toString("latin1"))) !== null) {
+    const start = match.index + match[0].length;
+    const endBuf = buf.subarray(start);
+    const endIdx = endBuf.indexOf(Buffer.from("endstream"));
+    if (endIdx < 0) continue;
+    const raw = endBuf.subarray(0, endIdx);
+    try {
+      const decompressed = Bun.gunzipSync(raw);
+      const str = decompressed.toString("latin1");
+      // Tj operator: (text) Tj
+      const tjMatch = str.match(/\(([^\\)]*(?:\\.[^\\)]*)*)\)\s*Tj/g);
+      if (tjMatch) {
+        for (const m of tjMatch) {
+          const inner = m.replace(/^\(/, "").replace(/\)\s*Tj$/, "");
+          text.push(unescapePdfString(inner));
+        }
+      }
+      // TJ array operator: [(text) num (text)] TJ
+      const tjArrayMatch = str.match(/\[([^\]]*)\]\s*TJ/g);
+      if (tjArrayMatch) {
+        for (const m of tjArrayMatch) {
+          const arrContent = m.replace(/^\[/, "").replace(/\]\s*TJ$/, "");
+          const parts = arrContent.match(/\(([^\\)]*(?:\\.[^\\)]*)*)\)/g);
+          if (parts) {
+            text.push(parts.map((p) => unescapePdfString(p.slice(1, -1))).join(""));
+          }
+        }
+      }
+    } catch { /* not a gzip stream */ }
+  }
+  const result = text.join(" ").replace(/\s+/g, " ").trim();
+  return result.slice(0, 240_000);
+}
+
+function unescapePdfString(s: string) {
+  return s
+    .replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t")
+    .replace(/\\\(/g, "(").replace(/\\\)/g, ")").replace(/\\\\/g, "\\")
+    .replace(/\\(\d{1,3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
+}
+
+// DOCX parser — mirrors Android's DocxParser.kt:
+// Parse word/document.xml from the ZIP, extract paragraphs with heading/list/table structure.
+function extractDocxText(pathValue: string) {
+  const entries = readZipEntries(readFileSync(pathValue));
+  const docEntry = entries.find((e) => e.name === "word/document.xml");
+  if (!docEntry) return "";
+  const xml = docEntry.data.toString("utf8");
+  // Extract body content
+  const bodyMatch = xml.match(/<w:body[\s>]?([\s\S]*?)<\/w:body>/i);
+  if (!bodyMatch) return stripXmlText(xml).slice(0, 240_000);
+  const body = bodyMatch[1];
+  const result: string[] = [];
+  // Split into paragraphs and tables
+  const blocks = body.split(/(<\/w:(?:p|tbl)>)/i);
+  let buffer = "";
+  for (const block of blocks) {
+    buffer += block;
+    if (/<\/w:p>/i.test(block)) {
+      const text = extractDocxParagraph(buffer);
+      if (text) result.push(text);
+      buffer = "";
+    } else if (/<\/w:tbl>/i.test(block)) {
+      result.push(extractDocxTable(buffer));
+      buffer = "";
+    }
+  }
+  return result.join("\n\n").slice(0, 240_000);
+}
+
+function extractDocxParagraph(xml: string): string {
+  // Check for heading style
+  const pStyleMatch = xml.match(/<w:pStyle[^>]*w:val="([Hh]eading)(\d)"/);
+  const headingLevel = pStyleMatch ? parseInt(pStyleMatch[2]) : 0;
+  // Check for list/numbering
+  const hasNumPr = /<w:numPr[\s>]/i.test(xml);
+  const listLevelMatch = xml.match(/<w:ilvl[^>]*w:val="(\d+)"/);
+  const listLevel = listLevelMatch ? parseInt(listLevelMatch[1]) : 0;
+  const isNumbered = /<w:numId[^>]*w:val="[^0]/i.test(xml);
+  // Extract text runs
+  const runs: string[] = [];
+  const runRe = /<w:r[\s>][\s\S]*?<\/w:r>/gi;
+  let runMatch: RegExpExecArray | null;
+  while ((runMatch = runRe.exec(xml)) !== null) {
+    const runXml = runMatch[0];
+    const isBold = /<w:b[\s>/]/i.test(runXml);
+    const isItalic = /<w:i[\s>/]/i.test(runXml);
+    const tMatch = runXml.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/i);
+    if (tMatch) {
+      let text = tMatch[1];
+      if (isBold && isItalic) text = `***${text}***`;
+      else if (isBold) text = `**${text}**`;
+      else if (isItalic) text = `*${text}*`;
+      runs.push(text);
+    }
+  }
+  const text = runs.join("").trim();
+  if (!text) return "";
+  if (headingLevel > 0) return `${"#".repeat(headingLevel)} ${text}`;
+  if (hasNumPr) {
+    const indent = "  ".repeat(listLevel);
+    const marker = isNumbered ? "1. " : "- ";
+    return `${indent}${marker}${text}`;
+  }
+  return text;
+}
+
+function extractDocxTable(xml: string): string {
+  const rows: string[][] = [];
+  const rowRe = /<w:tr[\s>][\s\S]*?<\/w:tr>/gi;
+  let rowMatch: RegExpExecArray | null;
+  while ((rowMatch = rowRe.exec(xml)) !== null) {
+    const cells: string[] = [];
+    const cellRe = /<w:tc[\s>][\s\S]*?<\/w:tc>/gi;
+    let cellMatch: RegExpExecArray | null;
+    while ((cellMatch = cellRe.exec(rowMatch[0])) !== null) {
+      const cellTexts: string[] = [];
+      const tRe = /<w:t[^>]*>([\s\S]*?)<\/w:t>/gi;
+      let tMatch: RegExpExecArray | null;
+      while ((tMatch = tRe.exec(cellMatch[0])) !== null) {
+        cellTexts.push(tMatch[1]);
+      }
+      cells.push(cellTexts.join(" ").trim());
+    }
+    if (cells.length) rows.push(cells);
+  }
+  if (!rows.length) return "";
+  const maxCols = Math.max(...rows.map((r) => r.length));
+  const lines: string[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const line = "| " + Array.from({ length: maxCols }, (_, ci) => rows[i][ci] ?? "").join(" | ") + " |";
+    lines.push(line);
+    if (i === 0) lines.push("| " + Array(maxCols).fill("---").join(" | ") + " |");
+  }
+  return lines.join("\n");
+}
+
+// PPTX parser — mirrors Android's PptxParser.kt:
+// Parse ppt/slides/slideN.xml, extract shape text + speaker notes.
+function extractPptxText(pathValue: string) {
+  const entries = readZipEntries(readFileSync(pathValue));
+  const slideEntries = entries
+    .filter((e) => /^ppt\/slides\/slide\d+\.xml$/i.test(e.name))
+    .sort((a, b) => {
+      const na = parseInt(a.name.match(/slide(\d+)/i)?.[1] ?? "0");
+      const nb = parseInt(b.name.match(/slide(\d+)/i)?.[1] ?? "0");
+      return na - nb;
+    });
+  if (!slideEntries.length) return "";
+  const slides: string[] = [];
+  for (let i = 0; i < slideEntries.length; i++) {
+    const xml = slideEntries[i].data.toString("utf8");
+    const parts: string[] = [];
+    // Extract text from <a:t> tags (matches Android's extractTextRun / extractShapeText)
+    const tRe = /<a:t>([\s\S]*?)<\/a:t>/gi;
+    let tMatch: RegExpExecArray | null;
+    while ((tMatch = tRe.exec(xml)) !== null) {
+      parts.push(tMatch[1]);
+    }
+    // Try to get speaker notes
+    const notesEntry = entries.find((e) => e.name === `ppt/notesSlides/notesSlide${i + 1}.xml`);
+    let notes = "";
+    if (notesEntry) {
+      const notesXml = notesEntry.data.toString("utf8");
+      const notesParts: string[] = [];
+      while ((tMatch = tRe.exec(notesXml)) !== null) {
+        notesParts.push(tMatch[1]);
+      }
+      notes = notesParts.join(" ").trim();
+    }
+    const content = parts.join(" ").trim();
+    if (!content && !notes) continue;
+    let slide = `## Slide ${i + 1}\n\n${content}`;
+    if (notes) slide += `\n\n### Speaker Notes\n\n${notes}`;
+    slides.push(slide);
+  }
+  return slides.join("\n\n").slice(0, 240_000);
 }
 
 function documentPromptText(fileName: string, content: string) {
@@ -6222,7 +6414,19 @@ function contentPartsForApi(parts: JsonValue[], targetModel?: Model) {
       const fileName = String(part.fileName ?? "document");
       const url = String(part.url ?? "");
       const entry = fileEntryFromApiUrl(url);
-      const extractedText = String(entry?.extractedText ?? "").trim();
+      // Match Android's DocumentAsPromptTransformer: extract text on demand if not cached.
+      let extractedText = String(entry?.extractedText ?? "").trim();
+      if (!extractedText && entry) {
+        const fresh = extractStoredFileText(entry);
+        if (fresh) {
+          extractedText = fresh;
+          // Cache for future requests (matches Android reading file on each send,
+          // but avoids re-parsing the same file repeatedly).
+          entry.extractedText = fresh;
+          entry.extractedAt = Date.now();
+          scheduleThrottledSaveState();
+        }
+      }
       result.push({
         type: "text",
         text: extractedText
@@ -6306,7 +6510,16 @@ function claudeBlocksFromUiParts(parts: JsonValue[]) {
       const fileName = String(part.fileName ?? "document");
       const url = String(part.url ?? "");
       const entry = fileEntryFromApiUrl(url);
-      const extractedText = String(entry?.extractedText ?? "").trim();
+      let extractedText = String(entry?.extractedText ?? "").trim();
+      if (!extractedText && entry) {
+        const fresh = extractStoredFileText(entry);
+        if (fresh) {
+          extractedText = fresh;
+          entry.extractedText = fresh;
+          entry.extractedAt = Date.now();
+          scheduleThrottledSaveState();
+        }
+      }
       blocks.push({
         type: "text",
         text: extractedText
@@ -6849,7 +7062,16 @@ function responseApiDocumentPart(part: Record<string, JsonValue>) {
   const fileName = String(part.fileName ?? "document");
   const url = String(part.url ?? "");
   const entry = fileEntryFromApiUrl(url);
-  const extractedText = String(entry?.extractedText ?? "").trim();
+  let extractedText = String(entry?.extractedText ?? "").trim();
+  if (!extractedText && entry) {
+    const fresh = extractStoredFileText(entry);
+    if (fresh) {
+      extractedText = fresh;
+      entry.extractedText = fresh;
+      entry.extractedAt = Date.now();
+      scheduleThrottledSaveState();
+    }
+  }
   return responseApiTextPart(
     extractedText ? documentPromptText(fileName, extractedText) : `[Document: ${fileName}] ${url}`,
     "user",
