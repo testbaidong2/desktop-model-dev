@@ -2961,17 +2961,18 @@ function webDavUrl(config: WebDavConfig, fileName = "") {
   return parts.length ? `${base}/${parts.join("/")}` : base;
 }
 
-async function webDavRequest(config: WebDavConfig, method: string, fileName = "", init: RequestInit = {}) {
+async function webDavRequest(config: WebDavConfig, method: string, fileName = "", init: RequestInit & { timeoutMs?: number } = {}) {
   const headers = {
     ...webDavAuthHeader(config),
     ...(init.headers as Record<string, string> | undefined ?? {}),
   };
+  const timeoutMs = init.timeoutMs ?? 30_000;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30_000);
+  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
   try {
     return await fetch(webDavUrl(config, fileName), { ...init, method, headers, signal: controller.signal });
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -3504,6 +3505,7 @@ async function webDavBackup(config: WebDavConfig) {
         "Content-Length": String(size),
       },
       body: bodyStream as unknown as BodyInit,
+      timeoutMs: 0, // no timeout — multi-GB uploads can take minutes
     });
     const text = await response.text();
     if (!response.ok) throw new Error(`WebDAV 备份失败：${response.status} ${text.slice(0, 500)}`);
@@ -3514,7 +3516,7 @@ async function webDavBackup(config: WebDavConfig) {
 }
 
 async function webDavRestore(config: WebDavConfig, fileName: string) {
-  const response = await webDavRequest(config, "GET", fileName);
+  const response = await webDavRequest(config, "GET", fileName, { timeoutMs: 0 });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`WebDAV 下载失败：${response.status} ${text.slice(0, 500)}`);
@@ -3642,6 +3644,7 @@ async function s3Request(
     bodyStream?: ReadableStream<Uint8Array>;
     bodyLength?: number;
     contentType?: string;
+    timeoutMs?: number;
   } = {},
 ) {
   let payload: Buffer = Buffer.alloc(0);
@@ -3661,12 +3664,13 @@ async function s3Request(
   const finalHeaders: Record<string, string> = { ...headers };
   if (options.contentType) finalHeaders["Content-Type"] = options.contentType;
   if (contentLength) finalHeaders["Content-Length"] = contentLength;
+  const timeoutMs = options.timeoutMs ?? 30_000;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30_000);
+  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
   try {
     return await fetch(requestUrl, { method, headers: finalHeaders, body: bodyForFetch, signal: controller.signal });
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -3727,6 +3731,7 @@ async function s3Backup(config: S3Config) {
       bodyStream,
       bodyLength: size,
       contentType: "application/zip",
+      timeoutMs: 0, // no timeout — multi-GB uploads can take minutes
     });
     const text = await response.text();
     if (!response.ok) throw new Error(`S3 备份失败：${response.status} ${text.slice(0, 500)}`);
@@ -3738,7 +3743,7 @@ async function s3Backup(config: S3Config) {
 
 async function s3Restore(config: S3Config, fileName: string) {
   const key = `${s3Prefix(config)}${fileName}`;
-  const response = await s3Request(config, "GET", key);
+  const response = await s3Request(config, "GET", key, { timeoutMs: 0 });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`S3 下载失败：${response.status} ${text.slice(0, 500)}`);
