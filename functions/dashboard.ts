@@ -411,6 +411,52 @@ const dashboardHtml = `<!DOCTYPE html>
     font-size: 14px;
   }
 
+  /* ─────────── 二级指标条(留存/累计/峰值) ─────────── */
+  .secondary {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .mini {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    position: relative;
+  }
+  .mini-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-weight: 500;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .mini-value {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .mini-sub {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .badge-tag {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.06);
+    color: var(--text-dim);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+
   /* ─────────── 入场动画 ─────────── */
   .fade-in {
     animation: fadeIn 0.4s ease-out backwards;
@@ -423,12 +469,14 @@ const dashboardHtml = `<!DOCTYPE html>
   /* ─────────── 响应式 ─────────── */
   @media (max-width: 1024px) {
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .secondary { grid-template-columns: repeat(3, 1fr); }
   }
   @media (max-width: 768px) {
     .container { padding: 24px 16px 48px; }
     .grid.two { grid-template-columns: 1fr; }
     .header { flex-direction: column; align-items: flex-start; }
     .stat-value { font-size: 26px; }
+    .secondary { grid-template-columns: repeat(2, 1fr); }
   }
   @media (max-width: 480px) {
     .stats-grid { grid-template-columns: 1fr; }
@@ -546,7 +594,7 @@ function render(data) {
 
   let html = '';
 
-  // ── 顶层指标卡 ──
+  // ── 顶层指标卡:核心活跃 ──
   const dauPct = today.dau ? Math.round((today.eff_dau ?? 0) / today.dau * 100) : 0;
   html += '<div class="stats-grid">';
   html += statCard({
@@ -567,7 +615,7 @@ function render(data) {
     label: '周活 / 月活',
     icon: ICONS.monthly,
     value: fmt(data.wau) + ' <span style="font-weight:400;color:var(--text-dim);font-size:18px"> / </span>' + fmt(data.mau),
-    foot: '粘性 ' + fmtPct(data.stickiness),
+    foot: 'DAU/MAU ' + fmtPct(data.stickinessMau ?? data.stickiness),
     color: 'var(--amber)', bg: 'var(--amber-dim)',
   });
   html += statCard({
@@ -577,6 +625,17 @@ function render(data) {
     foot: '较昨日 ' + delta(today.new_users ?? 0, yesterday.new_users ?? 0),
     color: 'var(--rose)', bg: 'var(--rose-dim)',
   });
+  html += '</div>';
+
+  // ── 二级指标条:留存 + 累计 + 峰值 ──
+  const ar = data.avgRetention || {};
+  html += '<div class="secondary fade-in">';
+  html += miniCard('累计用户', fmt(data.totalUsers), '历史出现过的全部设备');
+  html += miniCard('历史峰值 DAU', fmt(data.peakDau), data.peakDate ? '于 ' + data.peakDate : '—');
+  html += miniCard('DAU / WAU', fmtPct(data.stickinessWau), '周内回访密度');
+  html += miniCard('次日留存', ar.d1 != null ? ar.d1 + '%' : '—', '<span class="badge-tag">D+1</span> 加权平均');
+  html += miniCard('7 日留存', ar.d7 != null ? ar.d7 + '%' : '—', '<span class="badge-tag">D+7</span> 加权平均');
+  html += miniCard('30 日留存', ar.d30 != null ? ar.d30 + '%' : '—', '<span class="badge-tag">D+30</span> 加权平均');
   html += '</div>';
 
   // ── 主趋势图(全宽) ──
@@ -592,20 +651,34 @@ function render(data) {
   });
   html += '</div>';
 
-  // ── 消息 + 新用户(双栏) ──
+  // ── 消息量(单独)+ 新增用户(单独) ──
   html += '<div class="grid two">';
   html += card({
-    title: '消息量与新增',
-    desc: '每日消息总数与新增用户数',
-    legend: [
-      { label: '消息数', color: 'var(--sky)' },
-      { label: '新增', color: 'var(--pink)' },
-    ],
+    title: '每日消息总数',
+    desc: '所有有效日活的消息累计',
     body: '<div class="chart-wrap"><canvas id="msg-chart"></canvas></div>',
   });
   html += card({
-    title: '日均消息',
-    desc: '活跃用户日均发送消息',
+    title: '每日新增用户',
+    desc: '首次出现的设备数',
+    body: '<div class="chart-wrap"><canvas id="new-chart"></canvas></div>',
+  });
+  html += '</div>';
+
+  // ── 会话深度 + 日均消息(双栏) ──
+  const d = data.depth || {};
+  const depthTotal = (d.b0 || 0) + (d.b1_5 || 0) + (d.b6_20 || 0) + (d.b20p || 0);
+  html += '<div class="grid two">';
+  html += card({
+    title: '会话深度分布',
+    desc: '过去 7 天用户按消息数分桶',
+    body: depthTotal > 0
+      ? '<div class="chart-wrap"><canvas id="depth-chart"></canvas></div>'
+      : emptyState('过去 7 天无数据'),
+  });
+  html += card({
+    title: '活跃用户日均消息',
+    desc: '当日有效用户人均发送量',
     body: '<div class="chart-wrap"><canvas id="avg-chart"></canvas></div>',
   });
   html += '</div>';
@@ -635,7 +708,7 @@ function render(data) {
     let table = '<table class="retention-table"><thead><tr>';
     table += '<th>新增日</th><th>新用户</th><th>次日</th><th>3 日</th><th>7 日</th><th>14 日</th><th>30 日</th>';
     table += '</tr></thead><tbody>';
-    for (const c of data.retention.cohorts.slice(0, 14)) {
+    for (const c of data.retention.cohorts.slice(0, 20)) {
       table += '<tr><td>' + c.date + '</td><td>' + c.size + '</td>';
       for (const offset of [1, 3, 7, 14, 30]) {
         const val = c.retention[offset];
@@ -651,8 +724,8 @@ function render(data) {
     table += '</tbody></table>';
     html += '<div class="grid full">';
     html += card({
-      title: '留存率',
-      desc: '不同时间窗口下新用户的回访比例',
+      title: '留存矩阵',
+      desc: '每个新增日 cohort 在 D+1 / D+3 / D+7 / D+14 / D+30 时的回访率',
       body: table,
     });
     html += '</div>';
@@ -662,6 +735,16 @@ function render(data) {
   drawCharts(data, trends);
 
   document.getElementById('updated').textContent = new Date().toTimeString().slice(0, 8) + ' 已更新';
+}
+
+function miniCard(label, value, sub) {
+  return \`
+    <div class="mini">
+      <div class="mini-label">\${label}</div>
+      <div class="mini-value">\${value}</div>
+      <div class="mini-sub">\${sub || ''}</div>
+    </div>
+  \`;
 }
 
 function emptyState(msg) {
@@ -730,7 +813,7 @@ function drawCharts(data, trends) {
     });
   }
 
-  // 消息 + 新用户(柱状)
+  // 消息总量(柱状,单系列)
   const msgCanvas = document.getElementById('msg-chart');
   if (msgCanvas) {
     new Chart(msgCanvas, {
@@ -738,11 +821,52 @@ function drawCharts(data, trends) {
       data: {
         labels,
         datasets: [
-          { label: '消息数', data: trends.map(t => t.total_msgs), backgroundColor: 'rgba(56,189,248,0.7)', borderRadius: 4, barPercentage: 0.65, categoryPercentage: 0.7 },
-          { label: '新增', data: trends.map(t => t.new_users), backgroundColor: 'rgba(244,114,182,0.7)', borderRadius: 4, barPercentage: 0.65, categoryPercentage: 0.7 },
+          { label: '消息数', data: trends.map(t => t.total_msgs), backgroundColor: 'rgba(56,189,248,0.7)', hoverBackgroundColor: 'rgba(56,189,248,0.95)', borderRadius: 4, barPercentage: 0.7, categoryPercentage: 0.75 },
         ]
       },
       options: baseOpts,
+    });
+  }
+
+  // 新增用户(柱状,单系列)
+  const newCanvas = document.getElementById('new-chart');
+  if (newCanvas) {
+    new Chart(newCanvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: '新增', data: trends.map(t => t.new_users), backgroundColor: 'rgba(244,114,182,0.7)', hoverBackgroundColor: 'rgba(244,114,182,0.95)', borderRadius: 4, barPercentage: 0.7, categoryPercentage: 0.75 },
+        ]
+      },
+      options: baseOpts,
+    });
+  }
+
+  // 会话深度分布(水平柱状)
+  const depthCanvas = document.getElementById('depth-chart');
+  if (depthCanvas && data.depth) {
+    const d = data.depth;
+    new Chart(depthCanvas, {
+      type: 'bar',
+      data: {
+        labels: ['0 条(仅启动)', '1–5 条(轻度)', '6–20 条(常规)', '20+ 条(深度)'],
+        datasets: [{
+          data: [d.b0 || 0, d.b1_5 || 0, d.b6_20 || 0, d.b20p || 0],
+          backgroundColor: ['rgba(113,113,122,0.6)', 'rgba(251,191,36,0.7)', 'rgba(52,211,153,0.7)', 'rgba(129,140,248,0.8)'],
+          hoverBackgroundColor: ['rgba(113,113,122,0.9)', 'rgba(251,191,36,0.95)', 'rgba(52,211,153,0.95)', 'rgba(129,140,248,1)'],
+          borderRadius: 4,
+          barPercentage: 0.7,
+        }],
+      },
+      options: {
+        ...baseOpts,
+        indexAxis: 'y',
+        scales: {
+          x: { ticks: { color: '#71717a', font: { family: fontFamily, size: 10.5 }, padding: 8 }, grid: { color: 'rgba(255,255,255,0.04)', drawTicks: false }, border: { display: false }, beginAtZero: true },
+          y: { ticks: { color: '#a1a1aa', font: { family: fontFamily, size: 11 }, padding: 8 }, grid: { display: false }, border: { display: false } },
+        },
+      },
     });
   }
 
