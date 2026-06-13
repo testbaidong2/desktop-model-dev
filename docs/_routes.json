@@ -1,5 +1,5 @@
 {
   "version": 1,
-  "include": ["/ping", "/dashboard", "/api/*"],
+  "include": ["/*"],
   "exclude": []
 }
