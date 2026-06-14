@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 type AnyRecord = Record<string, any>;
 
@@ -18,7 +18,7 @@ const webDavBaseUrl = `http://127.0.0.1:${webDavPort}/dav`;
 const requests: Array<{ path: string; body: AnyRecord }> = [];
 const mcpRequests: Array<{ method: string; body: AnyRecord }> = [];
 const webDavRequests: Array<{ method: string; path: string; auth: string }> = [];
-const webDavFiles = new Map<string, string>();
+const webDavFiles = new Map<string, Uint8Array>();
 const tinyPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lQSCdAAAAABJRU5ErkJggg==";
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -542,13 +542,15 @@ const webDavServer = Bun.serve({
     if (req.method === "MKCOL") return new Response(null, { status: 201 });
     if (req.method === "PUT") {
       if (!fileName) return new Response("missing file name", { status: 400 });
-      webDavFiles.set(fileName, await req.text());
+      // Backups are binary zips since 2026-05; store raw bytes so GET round-trips losslessly
+      // (req.text() would corrupt non-UTF-8 sequences into U+FFFD and break the restore path).
+      webDavFiles.set(fileName, new Uint8Array(await req.arrayBuffer()));
       return new Response(null, { status: 201 });
     }
     if (req.method === "GET") {
       const content = webDavFiles.get(fileName);
       if (!content) return new Response("not found", { status: 404 });
-      return new Response(content, { headers: { "Content-Type": "application/json; charset=utf-8" } });
+      return new Response(content, { headers: { "Content-Type": "application/zip" } });
     }
     if (req.method === "DELETE") {
       if (!webDavFiles.delete(fileName)) return new Response("not found", { status: 404 });
@@ -618,6 +620,39 @@ async function uploadFiles(path: string, files: File[]) {
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) throw new Error(`upload ${path} failed: ${response.status} ${text}`);
   return data;
+}
+
+// 跨平台构造一个 zip(PK 格式):Windows 用 PowerShell System.IO.Compression,Linux/macOS
+// 用 zip 命令 —— 跟后端 createSettingsBackupZipToPath 的打包方式对称。Bun 无内置 Bun.zip,
+// 测试脚本自包含复制这套逻辑,不依赖后端内部函数。
+function createZipFile(entries: Array<[string, string]>): Buffer {
+  const tmpRoot = join(tempDir, `smoke-zip-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+  const stageDir = join(tmpRoot, "stage");
+  mkdirSync(stageDir, { recursive: true });
+  for (const [name, content] of entries) {
+    const fullPath = join(stageDir, ...name.split("/"));
+    mkdirSync(dirname(fullPath), { recursive: true });
+    writeFileSync(fullPath, content);
+  }
+  const zipPath = join(tmpRoot, "out.zip");
+  if (process.platform === "win32") {
+    const script = [
+      "Add-Type -AssemblyName System.IO.Compression.FileSystem",
+      `[System.IO.Compression.ZipFile]::CreateFromDirectory('${stageDir.replace(/'/g, "''")}', '${zipPath.replace(/'/g, "''")}')`,
+    ].join("; ");
+    const proc = Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], { timeout: 60_000 });
+    if (proc.exitCode !== 0) {
+      throw new Error(`createZipFile powershell failed: ${new TextDecoder().decode(proc.stderr ?? new Uint8Array()).slice(0, 200)}`);
+    }
+  } else {
+    const proc = Bun.spawnSync(["zip", "-rq", zipPath, "."], { cwd: stageDir, timeout: 60_000 });
+    if (proc.exitCode !== 0) {
+      throw new Error(`createZipFile zip failed: ${new TextDecoder().decode(proc.stderr ?? new Uint8Array()).slice(0, 200)}`);
+    }
+  }
+  const buf = readFileSync(zipPath);
+  rmSync(tmpRoot, { recursive: true, force: true });
+  return buf;
 }
 
 async function expectApiError(path: string, init: RequestInit, expected: string) {
@@ -1764,36 +1799,66 @@ async function runDeletedConversationSearchSmoke() {
 }
 
 async function runBackupRoundtripSmoke() {
-  const exported = await api("/api/data/export");
-  assert(exported.app === "RikkaHub PC", "backup app marker missing");
-  assert(exported.state?.settings, "backup state settings missing");
-  assert(Array.isArray(exported.skills), "backup skills missing");
-  assert(Array.isArray(exported.files), "backup files missing");
-  const fileListSkill = {
-    name: "smoke-import-file-list-skill",
-    description: "file list import compatibility",
-    files: [
-      {
-        path: "SKILL.md",
-        content: "---\nname: smoke-import-file-list-skill\ndescription: file list import compatibility\n---\n\n# File List Skill\n",
-      },
-      {
-        path: "references/example.txt",
-        content: "nested reference file",
-      },
-    ],
-  };
-  exported.skills = [...exported.skills, fileListSkill];
-  const imported = await api("/api/data/import", {
+  // /api/data/export 自 2026-05 起从 JSON 改为流式 zip(修大附件库 OOM,见 server.ts:14253)。
+  //
+  // 场景一 — 真实 zip round-trip:创建 skill → 导出 zip(校验类型/魔数,不再是 JSON)→
+  //   删除 skill → octet-stream 导入 zip → 校验 skill 经 pc-backup.json 路径恢复。
+  //
+  // 场景二 — 含嵌套文件的 skill zip 导入(对齐安卓 importSkillsFromZipBuffer):构造一个
+  //   带 SKILL.md + references/example.txt 的 zip,走 /api/skills/import-file 校验嵌套文件落地。
+  //   用 skills/import-file 而非 data/import —— 后者会整体替换 state,破坏后续 smoke。
+
+  // --- 场景一:zip round-trip ---
+  const skillName = `smoke-backup-skill-${Date.now()}`;
+  const marker = `unique-marker-${skillName}`;
+  const created = await api("/api/skills/detail", {
     method: "POST",
-    body: JSON.stringify(exported),
+    body: JSON.stringify({
+      name: skillName,
+      content: `---\nname: ${skillName}\ndescription: smoke backup roundtrip marker\n---\n\n# Smoke Backup Skill\n${marker}\n`,
+    }),
   });
-  assert(imported.status === "imported", "backup import did not report imported");
-  const importedSkills = await api("/api/skills");
-  assert(importedSkills.some((skill: AnyRecord) => skill.name === fileListSkill.name), "backup import did not restore file-list skill");
-  const importedSkillFiles = await api(`/api/skills/${encodeURIComponent(fileListSkill.name)}/files`);
-  assert(importedSkillFiles.files?.some((file: AnyRecord) => file.path === "references/example.txt"), "backup import did not restore nested skill files");
-  return { conversations: exported.state.conversations?.length ?? 0, files: exported.files.length, importedSkill: fileListSkill.name };
+  assert(created.skill?.name === skillName, "pre-export skill creation failed");
+
+  const exportRes = await fetch(`${baseUrl}/api/data/export`);
+  assert(exportRes.ok, `export request failed: ${exportRes.status}`);
+  assert((exportRes.headers.get("Content-Type") ?? "").startsWith("application/zip"), "export Content-Type should be application/zip");
+  const exportFilename = exportRes.headers.get("X-Export-Filename") ?? "";
+  assert(/^rikkahub-backup-.*\.zip$/.test(exportFilename), `export filename unexpected: ${exportFilename}`);
+  const zipBytes = new Uint8Array(await exportRes.arrayBuffer());
+  assert(zipBytes.length > 4 && zipBytes[0] === 0x50 && zipBytes[1] === 0x4b, "export body is not a zip (bad PK magic)");
+
+  await fetch(`${baseUrl}/api/skills/${encodeURIComponent(skillName)}`, { method: "DELETE" });
+  assert(!(await api("/api/skills")).some((s: AnyRecord) => s.name === skillName), "skill should be gone after delete");
+
+  const importRes = await fetch(`${baseUrl}/api/data/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream", "X-Filename": encodeURIComponent(exportFilename) },
+    body: zipBytes,
+  });
+  const imported = await importRes.json();
+  assert(importRes.ok && imported.status === "imported", `zip import failed: ${importRes.status} ${JSON.stringify(imported)}`);
+  assert((await api("/api/skills")).some((s: AnyRecord) => s.name === skillName), "zip import did not restore skill");
+  const restored = await api(`/api/skills/${encodeURIComponent(skillName)}`);
+  assert(String(restored.content ?? "").includes(marker), "restored skill content mismatch");
+  await fetch(`${baseUrl}/api/skills/${encodeURIComponent(skillName)}`, { method: "DELETE" });
+
+  // --- 场景二:嵌套文件 skill zip 导入 ---
+  const nestedSkillName = `smoke-import-file-list-${Date.now()}`;
+  const nestedZip = createZipFile([
+    ["SKILL.md", `---\nname: ${nestedSkillName}\ndescription: file list import compatibility\n---\n\n# File List Skill\n`],
+    ["references/example.txt", "nested reference file"],
+  ]);
+  const form = new FormData();
+  form.append("file", new File([nestedZip], "skill.zip", { type: "application/zip" }));
+  const importFileRes = await fetch(`${baseUrl}/api/skills/import-file`, { method: "POST", body: form });
+  const importFileBody = await importFileRes.json();
+  assert(importFileRes.ok && Array.isArray(importFileBody.imported) && importFileBody.imported.includes(nestedSkillName), `skills/import-file failed: ${importFileRes.status} ${JSON.stringify(importFileBody)}`);
+  const importedSkillFiles = await api(`/api/skills/${encodeURIComponent(nestedSkillName)}/files`);
+  assert(importedSkillFiles.files?.some((f: AnyRecord) => f.path === "references/example.txt"), "skills/import-file did not restore nested skill files");
+  await fetch(`${baseUrl}/api/skills/${encodeURIComponent(nestedSkillName)}`, { method: "DELETE" });
+
+  return { exportFilename, zipBytes: zipBytes.length, restoredSkill: skillName, nestedSkill: nestedSkillName };
 }
 
 async function runWebDavBackupSmoke() {
@@ -1815,10 +1880,10 @@ async function runWebDavBackupSmoke() {
   });
   assert(test.status === "ok", "WebDAV test did not pass against mock server");
   const backup = await api("/api/data/webdav/backup", { method: "POST", body: "{}" });
-  assert(backup.status === "ok" && /^backup_.*\.json$/.test(backup.fileName), "WebDAV backup did not create a backup file");
+  assert(backup.status === "ok" && /^backup_.*\.zip$/.test(backup.fileName), "WebDAV backup did not create a backup file");
   assert(webDavFiles.has(backup.fileName), "mock WebDAV server did not receive backup payload");
-  const payload = JSON.parse(webDavFiles.get(backup.fileName) ?? "{}");
-  assert(payload.app === "RikkaHub PC" && payload.state?.settings, "WebDAV backup payload shape is invalid");
+  const backupBytes = webDavFiles.get(backup.fileName);
+  assert(backupBytes && backupBytes.length > 4 && backupBytes[0] === 0x50 && backupBytes[1] === 0x4b, "WebDAV backup payload is not a zip");
   const listed = await api("/api/data/webdav/list");
   assert(listed.items?.some((item: AnyRecord) => item.displayName === backup.fileName), "WebDAV list did not include backup file");
   const beforeSettings = await api("/api/settings");
