@@ -1143,11 +1143,11 @@ export const ConversationSidebar = React.memo(({
             size="icon-sm"
             className="text-foreground"
             type="button"
-            aria-label="图像生成"
-            title="图像生成"
+            aria-label={t("conversation_sidebar.settings", "Settings")}
+            title={t("conversation_sidebar.settings", "Settings")}
           >
-            <Link to="/images">
-              <Images className="size-4" />
+            <Link to="/settings">
+              <Settings className="size-4" />
             </Link>
           </Button>
 
@@ -1157,11 +1157,11 @@ export const ConversationSidebar = React.memo(({
             size="icon-sm"
             className="text-foreground"
             type="button"
-            aria-label={t("conversation_sidebar.settings", "Settings")}
-            title={t("conversation_sidebar.settings", "Settings")}
+            aria-label="图像生成"
+            title="图像生成"
           >
-            <Link to="/settings">
-              <Settings className="size-4" />
+            <Link to="/images">
+              <Images className="size-4" />
             </Link>
           </Button>
 
