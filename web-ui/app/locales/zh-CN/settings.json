@@ -129,6 +129,7 @@
     "headers_desc": "发送模型请求时会追加到请求头。",
     "no_header": "没有自定义 Header",
     "bodies_desc": "按 key 合并进请求体；value 可填写 JSON 或普通字符串。",
+    "body_value_ph": "\"value\" 或 {\"extra\": true}",
     "no_body": "没有自定义 Body",
     "ext_summary_title": "拓展状态摘要",
     "ext_injection": "提示词注入",

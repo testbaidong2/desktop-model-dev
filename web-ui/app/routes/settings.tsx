@@ -2752,21 +2752,21 @@ function AssistantsSection({
             </div>
           </div>
           <div className="rounded-md border p-3">
-            <div className="text-sm font-medium">本地工具</div>
+            <div className="text-sm font-medium">{t("settings:assistants.local_tools_title")}</div>
             <div className="mt-1 text-xs text-muted-foreground">
-              本地工具列表。启用后，仅在当前模型支持工具调用时才会注入给模型。
+              {t("settings:assistants.local_tools_desc")}
             </div>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               {[
-                ["time_info", "时间信息", "读取 PC 本地时间、时区、星期和时间戳。"],
+                ["time_info", t("settings:assistants.tools.time_info.title"), t("settings:assistants.tools.time_info.desc")],
                 [
                   "javascript_engine",
-                  "JavaScript 引擎",
-                  "用于计算和纯文本数据转换，不提供 DOM/Node API。",
+                  t("settings:assistants.tools.js_engine.title"),
+                  t("settings:assistants.tools.js_engine.desc"),
                 ],
-                ["clipboard", "剪贴板", "读写系统剪贴板；除非用户明确要求，否则模型不应写入。"],
-                ["tts", "语音播报", "调用系统语音朗读文本。"],
-                ["ask_user", "询问用户", "需要澄清时在对话中展示问题，由用户回答后继续。"],
+                ["clipboard", t("settings:assistants.tools.clipboard.title"), t("settings:assistants.tools.clipboard.desc")],
+                ["tts", t("settings:assistants.tools.tts.title"), t("settings:assistants.tools.tts.desc")],
+                ["ask_user", t("settings:assistants.tools.ask_user.title"), t("settings:assistants.tools.ask_user.desc")],
               ].map(([type, label, desc]) => {
                 const enabled =
                   Array.isArray(draft.localTools) &&
@@ -2806,14 +2806,14 @@ function AssistantsSection({
             </div>
           </div>
           <div className="rounded-md border p-3">
-            <div className="mb-3 text-sm font-medium">自定义请求</div>
+            <div className="mb-3 text-sm font-medium">{t("settings:assistants.custom_request_title")}</div>
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="space-y-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-sm">Headers</div>
                     <div className="text-xs text-muted-foreground">
-                      发送模型请求时会追加到请求头。
+                      {t("settings:assistants.headers_desc")}
                     </div>
                   </div>
                   <Button
@@ -2825,12 +2825,12 @@ function AssistantsSection({
                     }
                   >
                     <Plus className="size-4" />
-                    添加
+                    {t("settings:assistants.add_button")}
                   </Button>
                 </div>
                 {customHeaders.length === 0 ? (
                   <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
-                    没有自定义 Header
+                    {t("settings:assistants.no_header")}
                   </div>
                 ) : null}
                 {customHeaders.map((header, index) => (
@@ -2870,7 +2870,7 @@ function AssistantsSection({
                   <div>
                     <div className="text-sm">Bodies</div>
                     <div className="text-xs text-muted-foreground">
-                      按 key 合并进请求体；value 可填写 JSON 或普通字符串。
+                      {t("settings:assistants.bodies_desc")}
                     </div>
                   </div>
                   <Button
@@ -2882,12 +2882,12 @@ function AssistantsSection({
                     }
                   >
                     <Plus className="size-4" />
-                    添加
+                    {t("settings:assistants.add_button")}
                   </Button>
                 </div>
                 {customBodies.length === 0 ? (
                   <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
-                    没有自定义 Body
+                    {t("settings:assistants.no_body")}
                   </div>
                 ) : null}
                 {customBodies.map((body, index) => (
@@ -2921,7 +2921,7 @@ function AssistantsSection({
                           : JSON.stringify(body.value ?? "", null, 2)
                       }
                       onChange={(event) => updateCustomBody(index, { value: event.target.value })}
-                      placeholder='"value" 或 {"extra": true}'
+                      placeholder={t("settings:assistants.body_value_ph")}
                     />
                   </div>
                 ))}
@@ -2929,10 +2929,10 @@ function AssistantsSection({
             </div>
           </div>
           <div className="rounded-md border p-3">
-            <div className="text-sm font-medium">拓展状态摘要</div>
+            <div className="text-sm font-medium">{t("settings:assistants.ext_summary_title")}</div>
             <div className="mt-2 grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
-              <div>提示词注入: {(draft.modeInjectionIds ?? []).length}</div>
-              <div>世界书: {(draft.lorebookIds ?? []).length}</div>
+              <div>{t("settings:assistants.ext_injection")}: {(draft.modeInjectionIds ?? []).length}</div>
+              <div>{t("settings:assistants.ext_lorebook")}: {(draft.lorebookIds ?? []).length}</div>
               <div>MCP: {(draft.mcpServers ?? []).length}</div>
               <div>
                 Local tools: {Array.isArray(draft.localTools) ? draft.localTools.length : 0}
@@ -2946,9 +2946,9 @@ function AssistantsSection({
               disabled={settings.assistants.length <= 1}
             >
               <Trash2 className="size-4" />
-              删除
+              {t("settings:assistants.delete")}
             </Button>
-            <div className="flex items-center px-2 text-xs text-muted-foreground">已自动保存</div>
+            <div className="flex items-center px-2 text-xs text-muted-foreground">{t("settings:assistants.autosaved")}</div>
           </div>
         </div>
       </div>

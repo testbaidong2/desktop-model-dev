@@ -135,6 +135,7 @@
     "headers_desc": "Appended to request headers when sending model requests.",
     "no_header": "No custom headers",
     "bodies_desc": "Merged into the request body by key; the value can be JSON or a plain string.",
+    "body_value_ph": "\"value\" or {\"extra\": true}",
     "no_body": "No custom bodies",
     "ext_summary_title": "Extension summary",
     "ext_injection": "Prompt injections",
