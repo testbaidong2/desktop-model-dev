@@ -13,5 +13,14 @@
     "logs": "请求日志",
     "proxy": "代理与端口",
     "about": "关于"
+  },
+  "about": {
+    "title": "关于",
+    "subtitle": "应用标识、版本、系统信息、官网、GitHub 与 License。",
+    "version": "版本",
+    "system": "系统",
+    "website": "官网",
+    "check_update": "检查更新",
+    "check_failed": "检查更新失败"
   }
 }

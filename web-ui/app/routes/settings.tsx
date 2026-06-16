@@ -5905,6 +5905,7 @@ function ProxySection({ settings, onSettings }: { settings: Settings; onSettings
 }
 
 function AboutSection() {
+  const { t } = useTranslation();
   // Hard-coded current version — must match pc-server/server.ts:APP_VERSION and
   // web-ui/src-tauri/tauri.conf.json:version. The update checker compares this against
   // the latest GitHub release.
@@ -5925,22 +5926,22 @@ function AboutSection() {
       const info = await api.get<UpdateInfo>("update/check");
       setUpdateInfo(info);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "检查更新失败");
+      toast.error(err instanceof Error ? err.message : t("settings:about.check_failed"));
     } finally {
       setChecking(false);
     }
   };
 
   const aboutRows = [
-    { label: "版本", value: APP_VERSION, icon: Settings2, onClick: undefined, action: "update" as const },
-    { label: "系统", value: systemSummary || "—", icon: Smartphone, onClick: undefined, action: undefined },
-    { label: "官网", value: "https://rikkahub-desktop.pages.dev", icon: Globe, onClick: () => void openExternal("https://rikkahub-desktop.pages.dev/"), action: undefined },
-    { label: "GitHub", value: "https://github.com/yuh-G/rikkahub-desktop", icon: Github, onClick: () => void openExternal("https://github.com/yuh-G/rikkahub-desktop"), action: undefined },
-    { label: "License", value: "https://github.com/yuh-G/rikkahub-desktop/blob/master/LICENSE", icon: FileClock, onClick: () => void openExternal("https://github.com/yuh-G/rikkahub-desktop/blob/master/LICENSE"), action: undefined },
+    { key: "version", label: t("settings:about.version"), value: APP_VERSION, icon: Settings2, onClick: undefined, action: "update" as const },
+    { key: "system", label: t("settings:about.system"), value: systemSummary || "—", icon: Smartphone, onClick: undefined, action: undefined },
+    { key: "website", label: t("settings:about.website"), value: "https://rikkahub-desktop.pages.dev", icon: Globe, onClick: () => void openExternal("https://rikkahub-desktop.pages.dev/"), action: undefined },
+    { key: "github", label: "GitHub", value: "https://github.com/yuh-G/rikkahub-desktop", icon: Github, onClick: () => void openExternal("https://github.com/yuh-G/rikkahub-desktop/"), action: undefined },
+    { key: "license", label: "License", value: "https://github.com/yuh-G/rikkahub-desktop/blob/master/LICENSE", icon: FileClock, onClick: () => void openExternal("https://github.com/yuh-G/rikkahub-desktop/blob/master/LICENSE"), action: undefined },
   ];
   return (
     <>
-      <SectionHeader icon={CheckCircle2} title="关于" subtitle="应用标识、版本、系统信息、官网、GitHub 与 License。" />
+      <SectionHeader icon={CheckCircle2} title={t("settings:about.title")} subtitle={t("settings:about.subtitle")} />
       <div className="space-y-6">
         <div className="flex flex-col items-center gap-3 rounded-lg border bg-card p-8 text-center">
           <img
@@ -5971,7 +5972,7 @@ function AboutSection() {
                       disabled={checking}
                     >
                       {checking ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-                      检查更新
+                      {t("settings:about.check_update")}
                     </Button>
                   ) : row.onClick ? (
                     <ExternalLink className="size-3.5 shrink-0" />
@@ -5980,7 +5981,7 @@ function AboutSection() {
               </>
             );
             return (
-              <React.Fragment key={row.label}>
+              <React.Fragment key={row.key}>
                 {index > 0 ? <Separator /> : null}
                 {row.onClick ? (
                   <button type="button" className="flex w-full items-center justify-between gap-4 p-4 text-left transition hover:bg-accent/50" onClick={row.onClick}>
