@@ -1680,6 +1680,7 @@ function ProvidersSection({ settings, onSettings }: { settings: Settings; onSett
 }
 
 function AssistantsSection({ settings, onSettings }: { settings: Settings; onSettings: (settings: Settings) => void }) {
+  const { t } = useTranslation();
   const [assistantId, setAssistantId] = React.useState(settings.assistantId);
   const assistant = (settings.assistants.find((item) => item.id === assistantId) ?? settings.assistants[0]) as AssistantProfile | undefined;
   const [draft, setDraft] = React.useState<AssistantProfile | null>(assistant ? clone(assistant) : null);
@@ -1706,7 +1707,7 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
   React.useEffect(() => {
     if (!draft || !dirtyRef.current) return;
     const timer = window.setTimeout(() => {
-      void save().catch((error: Error) => toast.error(error.message || "自动保存助手失败"));
+      void save().catch((error: Error) => toast.error(error.message || t("settings:assistants.autosave_failed")));
     }, 700);
     return () => window.clearTimeout(timer);
   }, [draft, settings.assistants]);
@@ -1721,7 +1722,7 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
   }, [draft?.id]);
 
   React.useEffect(() => {
-    void loadMemories().catch((error: Error) => toast.error(error.message || "读取记忆失败"));
+    void loadMemories().catch((error: Error) => toast.error(error.message || t("settings:assistants.load_memories_failed")));
   }, [loadMemories, draft?.useGlobalMemory]);
 
   if (!draft) return null;
@@ -1735,7 +1736,7 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
     const created = {
       ...clone(settings.assistants[0]),
       id: crypto.randomUUID(),
-      name: "新助手",
+      name: t("settings:assistants.new_assistant_name"),
       avatar: { type: "dummy" },
       useAssistantAvatar: true,
       systemPrompt: "",
@@ -1749,7 +1750,7 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
       assistants: [...settings.assistants, created],
     });
     setAssistantId(created.id);
-    toast.success("助手已添加");
+    toast.success(t("settings:assistants.added"));
   };
   const moveAssistant = async (from: number, to: number) => {
     const assistants = moveItem(settings.assistants, from, to);
@@ -1757,12 +1758,12 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
     await api.post("settings/assistants/reorder", { ids: assistants.map((item) => item.id) });
   };
   const removeAssistant = async () => {
-    if (!window.confirm(`删除助手「${draft.name || "默认助手"}」？`)) return;
+    if (!window.confirm(t("settings:assistants.delete_confirm", { name: draft.name || t("settings:assistants.default_name") }))) return;
     await api.delete(`settings/assistant/${encodeURIComponent(draft.id)}`);
     const assistants = settings.assistants.filter((item) => item.id !== draft.id);
     onSettings({ ...settings, assistants, assistantId: settings.assistantId === draft.id ? assistants[0]?.id ?? "" : settings.assistantId });
     setAssistantId(assistants[0]?.id ?? "");
-    toast.success("助手已删除");
+    toast.success(t("settings:assistants.deleted"));
   };
   const parameterControl = (key: "temperature" | "topP", label: string, max: number, step: number) => {
     const value = typeof draft[key] === "number" ? draft[key] : key === "temperature" ? 1 : 1;
@@ -1801,11 +1802,11 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
     () => [
       {
         role: "user",
-        text: renderMessageTemplatePreview(messageTemplateValue, "你好啊", "user", draft, previewModel),
+        text: renderMessageTemplatePreview(messageTemplateValue, t("settings:assistants.preview_user_input"), "user", draft, previewModel),
       },
       {
         role: "assistant",
-        text: "你好，有什么我可以帮你的吗？",
+        text: t("settings:assistants.preview_assistant_response"),
       },
     ],
     [draft, messageTemplateValue, previewModel],
@@ -1833,27 +1834,27 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
     setMemoryContent("");
     setEditingMemoryId(null);
     await loadMemories();
-    toast.success(editingMemoryId ? "记忆已更新" : "记忆已添加");
+    toast.success(editingMemoryId ? t("settings:assistants.memory_updated") : t("settings:assistants.memory_added"));
   };
   const removeMemory = async (memoryId: number) => {
-    if (!window.confirm(`删除记忆 #${memoryId}？`)) return;
+    if (!window.confirm(t("settings:assistants.delete_memory_confirm", { id: memoryId }))) return;
     await api.delete(`settings/memory/${memoryId}`);
     if (editingMemoryId === memoryId) {
       setEditingMemoryId(null);
       setMemoryContent("");
     }
     await loadMemories();
-    toast.success("记忆已删除");
+    toast.success(t("settings:assistants.memory_deleted"));
   };
 
   return (
     <>
-      <SectionHeader icon={Bot} title="助手" subtitle="按基础、提示词、拓展、记忆、请求、MCP、本地工具分页编辑每个助手。" />
+      <SectionHeader icon={Bot} title={t("settings:assistants.title")} subtitle={t("settings:assistants.subtitle")} />
       <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
         <div className="rounded-lg border bg-card p-2">
           <Button className="mb-2 w-full justify-start" variant="outline" onClick={addAssistant}>
             <CopyPlus className="size-4" />
-            添加助手
+            {t("settings:assistants.add")}
           </Button>
           {settings.assistants.map((item, index) => (
             <SortableRow
@@ -1866,7 +1867,7 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
             >
               <span className="flex items-center gap-2">
                 <UIAvatar size="sm" name={item.name || "Assistant"} avatar={item.avatar} />
-                <span className="truncate">{item.name || "默认助手"}</span>
+                <span className="truncate">{item.name || t("settings:assistants.default_name")}</span>
               </span>
             </SortableRow>
           ))}
@@ -1888,18 +1889,18 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
           />
           <Separator />
           <label className="block space-y-2">
-            <span className="text-sm font-medium">名称</span>
+            <span className="text-sm font-medium">{t("settings:assistants.name")}</span>
             <Input value={draft.name} onChange={(event) => patchDraft({ name: event.target.value })} />
           </label>
           <label className="block space-y-2">
-            <span className="text-sm font-medium">系统提示词</span>
+            <span className="text-sm font-medium">{t("settings:assistants.system_prompt")}</span>
             <Textarea className="min-h-52 font-mono text-xs" value={textValue(draft.systemPrompt)} onChange={(event) => patchDraft({ systemPrompt: event.target.value })} />
           </label>
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-medium">消息内容模板</div>
-                <div className="mt-0.5 text-xs text-muted-foreground">发送给模型前会用这个模板包裹用户消息，通常保持默认即可。</div>
+                <div className="text-sm font-medium">{t("settings:assistants.message_template_title")}</div>
+                <div className="mt-0.5 text-xs text-muted-foreground">{t("settings:assistants.message_template_desc")}</div>
               </div>
               <Button
                 type="button"
@@ -1909,7 +1910,7 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
                 onClick={() => patchDraft({ messageTemplate: "{{ message }}" })}
               >
                 <RefreshCw className="size-4" />
-                重置
+                {t("settings:assistants.reset")}
               </Button>
             </div>
             <Textarea
@@ -1919,11 +1920,11 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
             />
             {messageTemplateMissingMessage ? (
               <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                模板不包含 {"{{ message }}"}，用户消息将不会被发送给模型。
+                {t("settings:assistants.template_missing_warn", { token: "{{ message }}" })}
               </div>
             ) : null}
             <div className="rounded-md border bg-muted/30 p-3">
-              <div className="mb-2 text-sm font-medium">模板预览</div>
+              <div className="mb-2 text-sm font-medium">{t("settings:assistants.template_preview")}</div>
               <div className="space-y-2">
                 {messageTemplatePreview.map((item) => (
                   <div key={item.role} className="rounded-md bg-background p-3 text-xs">
@@ -1933,7 +1934,7 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
                 ))}
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-                <span>可用变量：</span>
+                <span>{t("settings:assistants.available_vars")}</span>
                 {["role", "message", "time", "date", "cur_datetime", "user", "char", "model_name"].map((variable) => (
                   <code key={variable} className="rounded bg-muted px-1.5 py-0.5 font-mono">
                     {`{{ ${variable} }}`}
@@ -1945,8 +1946,8 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
           <div className="rounded-md border p-3">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-medium">预设消息</div>
-                <div className="mt-0.5 text-xs text-muted-foreground">新会话创建时会先写入这些预设消息，用于给助手一个稳定的开场上下文。</div>
+                <div className="text-sm font-medium">{t("settings:assistants.preset_messages_title")}</div>
+                <div className="mt-0.5 text-xs text-muted-foreground">{t("settings:assistants.preset_messages_desc")}</div>
               </div>
               <Button
                 type="button"
@@ -1955,11 +1956,11 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
                 onClick={() => patchDraft({ presetMessages: [...presetMessages, { role: "ASSISTANT", content: "" }] })}
               >
                 <Plus className="size-4" />
-                添加
+                {t("settings:assistants.add_button")}
               </Button>
             </div>
             <div className="space-y-3">
-              {presetMessages.length === 0 ? <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">没有预设消息</div> : null}
+              {presetMessages.length === 0 ? <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">{t("settings:assistants.no_preset")}</div> : null}
               {presetMessages.map((message, index) => (
                 <div key={String(message.id ?? index)} className="rounded-md border bg-muted/20 p-3">
                   <div className="mb-2 flex items-center gap-2">
@@ -1977,7 +1978,7 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
                       variant="ghost"
                       className="ml-auto"
                       onClick={() => patchDraft({ presetMessages: presetMessages.filter((_, itemIndex) => itemIndex !== index) })}
-                      title="删除预设消息"
+                      title={t("settings:assistants.delete_preset")}
                     >
                       <Trash2 className="size-4" />
                     </Button>
@@ -1994,8 +1995,8 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
           <div className="rounded-md border p-3">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-medium">正则替换</div>
-                <div className="mt-0.5 text-xs text-muted-foreground">在用户输入或助手输出结束后执行替换；无效正则会被自动跳过。</div>
+                <div className="text-sm font-medium">{t("settings:assistants.regex_title")}</div>
+                <div className="mt-0.5 text-xs text-muted-foreground">{t("settings:assistants.regex_desc")}</div>
               </div>
               <Button
                 type="button"
@@ -2011,11 +2012,11 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
                 }
               >
                 <Plus className="size-4" />
-                添加
+                {t("settings:assistants.add_button")}
               </Button>
             </div>
             <div className="space-y-3">
-              {assistantRegexes.length === 0 ? <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">没有正则规则</div> : null}
+              {assistantRegexes.length === 0 ? <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">{t("settings:assistants.no_regex")}</div> : null}
               {assistantRegexes.map((regex, index) => {
                 const scopes = Array.isArray(regex.affectingScope) ? regex.affectingScope.map(String) : [];
                 const toggleScope = (scope: "USER" | "ASSISTANT", checked: boolean) => {
@@ -2028,13 +2029,13 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
                   <div key={String(regex.id ?? index)} className="rounded-md border bg-muted/20 p-3">
                     <div className="mb-3 flex items-center gap-2">
                       <Switch checked={regex.enabled !== false} onCheckedChange={(checked) => updateRegex(index, { enabled: checked })} />
-                      <Input className="h-8" value={textValue(regex.name)} onChange={(event) => updateRegex(index, { name: event.target.value })} placeholder="规则名称" />
+                      <Input className="h-8" value={textValue(regex.name)} onChange={(event) => updateRegex(index, { name: event.target.value })} placeholder={t("settings:assistants.regex_name_ph")} />
                       <Button
                         type="button"
                         size="icon-sm"
                         variant="ghost"
                         onClick={() => patchDraft({ regexes: assistantRegexes.filter((_, itemIndex) => itemIndex !== index) })}
-                        title="删除正则"
+                        title={t("settings:assistants.delete_regex")}
                       >
                         <Trash2 className="size-4" />
                       </Button>
@@ -2060,7 +2061,7 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
                       </label>
                       <label className="flex items-center gap-2">
                         <Checkbox checked={regex.visualOnly === true} onCheckedChange={(checked) => updateRegex(index, { visualOnly: checked === true })} />
-                        仅视觉替换
+                        {t("settings:assistants.visual_only")}
                       </label>
                     </div>
                   </div>
@@ -2075,24 +2076,24 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
               <span className="text-sm font-medium">Max Tokens</span>
               <Input
                 value={numberText(draft.maxTokens)}
-                placeholder="不限制"
+                placeholder={t("settings:assistants.max_tokens_ph")}
                 onChange={(event) => {
                   const raw = event.target.value.trim();
                   setDraft({ ...draft, maxTokens: raw === "" ? null : Math.max(1, Number(raw) || 1) });
                 }}
               />
-              <div className="text-xs text-muted-foreground">留空表示不向供应商发送 max_tokens 限制。</div>
+              <div className="text-xs text-muted-foreground">{t("settings:assistants.max_tokens_desc")}</div>
             </label>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             {[
-              ["enableMemory", "启用记忆"],
-              ["useGlobalMemory", "使用全局记忆"],
-              ["enableRecentChatsReference", "引用最近聊天"],
-              ["streamOutput", "流式输出"],
-              ["enableTimeReminder", "时间提醒"],
-              ["useAssistantAvatar", "聊天中使用助手头像"],
-              ["allowConversationSystemPrompt", "允许会话独立 system prompt"],
+              ["enableMemory", t("settings:assistants.opt.enable_memory")],
+              ["useGlobalMemory", t("settings:assistants.opt.use_global_memory")],
+              ["enableRecentChatsReference", t("settings:assistants.opt.recent_chats")],
+              ["streamOutput", t("settings:assistants.opt.stream_output")],
+              ["enableTimeReminder", t("settings:assistants.opt.time_reminder")],
+              ["useAssistantAvatar", t("settings:assistants.opt.use_avatar")],
+              ["allowConversationSystemPrompt", t("settings:assistants.opt.allow_conv_prompt")],
             ].map(([key, label]) => (
               <label key={key} className="flex items-center justify-between rounded-md border px-3 py-2">
                 <span className="text-sm">{label}</span>
@@ -2103,14 +2104,14 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
           <div className="rounded-md border p-3">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-medium">记忆管理</div>
+                <div className="text-sm font-medium">{t("settings:assistants.memory_title")}</div>
                 <div className="mt-0.5 text-xs text-muted-foreground">
-                  开启记忆后会注入 <code className="rounded bg-muted px-1">memory_tool</code>，并在后续会话中以 Memories Prompt 注入已保存的记忆。
+                  {t("settings:assistants.memory_desc_pre")}<code className="rounded bg-muted px-1">memory_tool</code>{t("settings:assistants.memory_desc_post")}
                 </div>
               </div>
               <Button type="button" size="sm" variant="outline" onClick={() => void loadMemories()}>
                 <RefreshCw className="size-4" />
-                刷新
+                {t("settings:assistants.refresh")}
               </Button>
             </div>
             <div className="grid gap-3 md:grid-cols-[1fr_220px]">
@@ -2118,33 +2119,33 @@ function AssistantsSection({ settings, onSettings }: { settings: Settings; onSet
                 className="min-h-24"
                 value={memoryContent}
                 onChange={(event) => setMemoryContent(event.target.value)}
-                placeholder="写入一条长期记忆，例如用户偏好的称呼、工作背景或长期项目设定"
+                placeholder={t("settings:assistants.memory_ph")}
               />
               <div className="flex flex-col gap-2">
                 <Button type="button" onClick={() => void saveMemory()} disabled={!memoryContent.trim()}>
                   <Save className="size-4" />
-                  {editingMemoryId ? `更新 #${editingMemoryId}` : "添加记忆"}
+                  {editingMemoryId ? t("settings:assistants.update_memory", { id: editingMemoryId }) : t("settings:assistants.add_memory")}
                 </Button>
                 {editingMemoryId ? (
                   <Button type="button" variant="outline" onClick={() => { setEditingMemoryId(null); setMemoryContent(""); }}>
-                    取消编辑
+                    {t("settings:assistants.cancel_edit")}
                   </Button>
                 ) : null}
                 <div className="text-xs text-muted-foreground">
-                  当前来源：{draft.useGlobalMemory ? "全局记忆" : "当前助手记忆"}，共 {memories.length} 条。
+                  {t("settings:assistants.memory_source", { source: draft.useGlobalMemory ? t("settings:assistants.source_global") : t("settings:assistants.source_current"), n: memories.length })}
                 </div>
               </div>
             </div>
             <div className="mt-3 max-h-64 space-y-2 overflow-auto">
-              {memories.length === 0 ? <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">没有记忆</div> : null}
+              {memories.length === 0 ? <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">{t("settings:assistants.no_memory")}</div> : null}
               {memories.map((memory) => (
                 <div key={memory.id} className="flex items-start gap-3 rounded-md border bg-muted/20 p-3">
                   <div className="mt-0.5 shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">#{memory.id}</div>
                   <div className="min-w-0 flex-1 whitespace-pre-wrap text-sm leading-relaxed">{memory.content}</div>
-                  <Button type="button" size="icon-sm" variant="ghost" title="编辑记忆" onClick={() => { setEditingMemoryId(memory.id); setMemoryContent(memory.content); }}>
+                  <Button type="button" size="icon-sm" variant="ghost" title={t("settings:assistants.edit_memory")} onClick={() => { setEditingMemoryId(memory.id); setMemoryContent(memory.content); }}>
                     <NotebookText className="size-4" />
                   </Button>
-                  <Button type="button" size="icon-sm" variant="ghost" title="删除记忆" onClick={() => void removeMemory(memory.id)}>
+                  <Button type="button" size="icon-sm" variant="ghost" title={t("settings:assistants.delete_memory_title")} onClick={() => void removeMemory(memory.id)}>
                     <Trash2 className="size-4" />
                   </Button>
                 </div>
