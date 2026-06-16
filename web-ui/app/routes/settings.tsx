@@ -4819,6 +4819,7 @@ function McpExtensionsSection({
   settings: Settings;
   onSettings: (settings: Settings) => void;
 }) {
+  const { t } = useTranslation();
   type Tab = "mcp" | "mode" | "lorebook" | "quick" | "skills";
   const tabFromQuery = React.useMemo<Tab>(() => {
     if (typeof window === "undefined") return "mcp";
@@ -4845,16 +4846,16 @@ function McpExtensionsSection({
     <>
       <SectionHeader
         icon={CopyPlus}
-        title="MCP 与拓展"
-        subtitle="管理 MCP 服务器、提示词注入、世界书、快捷消息与 Agent Skills。"
+        title={t("settings:mcp.title")}
+        subtitle={t("settings:mcp.subtitle")}
       />
       <div className="mb-4 flex flex-wrap items-center gap-2">
         {(
           [
             ["mcp", "MCP", CopyPlus],
-            ["mode", "提示词注入", WandSparkles],
-            ["lorebook", "世界书", Database],
-            ["quick", "快捷消息", MessageSquareText],
+            ["mode", t("settings:mcp.tab.mode"), WandSparkles],
+            ["lorebook", t("settings:mcp.tab.lorebook"), Database],
+            ["quick", t("settings:mcp.tab.quick"), MessageSquareText],
             ["skills", "Skills", Bot],
           ] as Array<[Tab, string, React.ComponentType<{ className?: string }>]>
         ).map(([idValue, label, Icon]) => (
@@ -4878,7 +4879,7 @@ function McpExtensionsSection({
             <SelectContent>
               {settings.assistants.map((assistant) => (
                 <SelectItem key={assistant.id} value={assistant.id}>
-                  {assistant.name || "默认助手"}
+                  {assistant.name || t("settings:assistants.default_name")}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -4920,12 +4921,12 @@ function prettyJson(value: unknown) {
   return JSON.stringify(value ?? [], null, 2);
 }
 
-function parseJson<T>(value: string, fallback: T): T {
+function parseJson<T>(value: string, fallback: T, errorMsg = "Invalid JSON"): T {
   try {
     return JSON.parse(value) as T;
   } catch {
     void fallback;
-    throw new Error("JSON 格式不正确");
+    throw new Error(errorMsg);
   }
 }
 
@@ -4948,10 +4949,10 @@ function mcpStatus(server: Record<string, unknown>) {
     server.commonOptions && typeof server.commonOptions === "object"
       ? (server.commonOptions as Record<string, unknown>)
       : {};
-  if (common.enable === false) return { ok: false, label: "已关闭" };
+  if (common.enable === false) return { ok: false, key: "off" };
   if (common.connected === false || textValue(common.lastSyncError))
-    return { ok: false, label: "连接异常" };
-  return { ok: true, label: "已连接" };
+    return { ok: false, key: "error" };
+  return { ok: true, key: "connected" };
 }
 
 function McpServerEditor({
@@ -4963,6 +4964,7 @@ function McpServerEditor({
   assistant: AssistantProfile;
   onSettings: (settings: Settings) => void;
 }) {
+  const { t } = useTranslation();
   const servers = (settings.mcpServers ?? []) as Array<Record<string, unknown>>;
   const [selectedId, setSelectedId] = React.useState(textValue(servers[0]?.id));
   const selected =
@@ -5028,10 +5030,10 @@ function McpServerEditor({
     let parsedHeaders: unknown[];
     let parsedTools: unknown[];
     try {
-      parsedHeaders = parseJson<unknown[]>(headersText, []);
-      parsedTools = parseJson<unknown[]>(toolsText, []);
+      parsedHeaders = parseJson<unknown[]>(headersText, [], t("settings:mcp.json_invalid"));
+      parsedTools = parseJson<unknown[]>(toolsText, [], t("settings:mcp.json_invalid"));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "JSON 格式不正确");
+      toast.error(error instanceof Error ? error.message : t("settings:mcp.json_invalid"));
       return;
     }
     const nextDraft = { ...draft, commonOptions: { ...common, ...patch } };
@@ -5051,7 +5053,7 @@ function McpServerEditor({
         return pullSettings(onSettings);
       })
       .catch((error) => {
-        toast.error(error instanceof Error ? error.message : "保存失败");
+        toast.error(error instanceof Error ? error.message : t("settings:mcp.save_failed"));
       });
   };
   const save = async (announce = true) => {
@@ -5062,8 +5064,8 @@ function McpServerEditor({
         ...draft,
         commonOptions: {
           ...common,
-          headers: parseJson<unknown[]>(headersText, []),
-          tools: parseJson<unknown[]>(toolsText, []),
+          headers: parseJson<unknown[]>(headersText, [], t("settings:mcp.json_invalid")),
+          tools: parseJson<unknown[]>(toolsText, [], t("settings:mcp.json_invalid")),
         },
       };
       const result = await api.post<{ server: Record<string, unknown> }>(
@@ -5073,9 +5075,9 @@ function McpServerEditor({
       setSelectedId(String(result.server.id));
       dirtyRef.current = false;
       await pullSettings(onSettings);
-      if (announce) toast.success("MCP 服务器已保存");
+      if (announce) toast.success(t("settings:mcp.server.saved"));
     } catch (error) {
-      if (announce) toast.error(error instanceof Error ? error.message : "保存失败");
+      if (announce) toast.error(error instanceof Error ? error.message : t("settings:mcp.save_failed"));
       else console.warn("MCP auto-save failed", error);
     } finally {
       setBusy(false);
@@ -5089,11 +5091,11 @@ function McpServerEditor({
     return () => window.clearTimeout(timer);
   }, [draft, headersText, toolsText]);
   const remove = async () => {
-    if (!selected.id || !window.confirm("删除这个 MCP 服务器？")) return;
+    if (!selected.id || !window.confirm(t("settings:mcp.server.delete_confirm"))) return;
     await api.delete(`settings/mcp-server/${encodeURIComponent(String(selected.id))}`);
     setSelectedId("");
     await pullSettings(onSettings);
-    toast.success("已删除 MCP 服务器");
+    toast.success(t("settings:mcp.server.deleted"));
   };
   const reorder = async (from: number, to: number) => {
     const next = moveItem(servers, from, to);
@@ -5106,7 +5108,7 @@ function McpServerEditor({
     <EditorShell
       items={servers}
       selectedId={selectedId}
-      emptyLabel="还没有 MCP 服务器"
+      emptyLabel={t("settings:mcp.server.empty")}
       onSelect={setSelectedId}
       onMove={reorder}
       titleOf={mcpName}
@@ -5116,7 +5118,7 @@ function McpServerEditor({
           <div className="flex min-w-0 items-center gap-2 text-left">
             <span
               className={`size-2 shrink-0 rounded-full ${status.ok ? "bg-emerald-500" : "bg-red-500"}`}
-              title={status.label}
+              title={t(`settings:mcp.status_${status.key}`)}
             />
             <span className="truncate">{mcpName(item)}</span>
           </div>
@@ -5140,32 +5142,32 @@ function McpServerEditor({
           setToolsText("[]");
           dirtyRef.current = false;
         } catch (error) {
-          toast.error(error instanceof Error ? error.message : "新增 MCP 服务器失败");
+          toast.error(error instanceof Error ? error.message : t("settings:mcp.server.create_failed"));
         }
       }}
     >
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-sm font-medium">服务器详情</div>
+            <div className="text-sm font-medium">{t("settings:mcp.server.detail")}</div>
             <div className="text-xs text-muted-foreground">
-              启用后会自动连接并同步 tools/list；在首页 MCP 选择器里决定当前助手是否使用它。
+              {t("settings:mcp.server.detail_desc")}
             </div>
           </div>
         </div>
         <div className="grid gap-3 md:grid-cols-[1fr_auto]">
           <label className="space-y-1">
-            <span className="text-xs font-medium text-muted-foreground">名称</span>
+            <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.name")}</span>
             <Input
               value={textValue(common.name)}
               onChange={(event) =>
                 patchDraft({ ...draft, commonOptions: { ...common, name: event.target.value } })
               }
-              placeholder="名称"
+              placeholder={t("settings:mcp.name_ph")}
             />
           </label>
           <label className="flex items-end gap-2 pb-1">
-            <span className="pb-2 text-sm text-muted-foreground">启用</span>
+            <span className="pb-2 text-sm text-muted-foreground">{t("settings:mcp.enabled")}</span>
             <Switch
               checked={common.enable !== false}
               onCheckedChange={(checked) => patchCommon({ enable: checked })}
@@ -5187,18 +5189,18 @@ function McpServerEditor({
           </Select>
         </div>
         <label className="space-y-1">
-          <span className="text-xs font-medium text-muted-foreground">服务地址</span>
+          <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.server.url")}</span>
           <Input
             value={textValue(draft.url)}
             onChange={(event) => patchDraft({ ...draft, url: event.target.value })}
             placeholder="https://example.com/mcp"
           />
           <span className="block text-xs text-muted-foreground">
-            MCP 服务器的 Streamable HTTP / SSE 入口地址。
+            {t("settings:mcp.server.url_desc")}
           </span>
         </label>
         <label className="space-y-1">
-          <span className="text-xs font-medium text-muted-foreground">请求头 JSON</span>
+          <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.server.headers_json")}</span>
           <Textarea
             value={headersText}
             onChange={(event) => {
@@ -5209,11 +5211,11 @@ function McpServerEditor({
             placeholder='[["Authorization","Bearer ..."]]'
           />
           <span className="block text-xs text-muted-foreground">
-            用于鉴权或自定义 Header，格式为键值数组。
+            {t("settings:mcp.server.headers_desc")}
           </span>
         </label>
         <label className="space-y-1">
-          <span className="text-xs font-medium text-muted-foreground">工具列表 JSON</span>
+          <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.server.tools_json")}</span>
           <Textarea
             value={toolsText}
             onChange={(event) => {
@@ -5221,18 +5223,18 @@ function McpServerEditor({
               setToolsText(event.target.value);
             }}
             className="h-44 max-h-44 font-mono text-xs"
-            placeholder="启用并保存后自动写入 tools/list 的结果，也可以手动编辑 enable 字段"
+            placeholder={t("settings:mcp.server.tools_ph")}
           />
           <span className="block text-xs text-muted-foreground">
-            自动保存启用的 MCP 服务时会同步工具。
-            {textValue(common.lastSyncError) ? `最近错误：${textValue(common.lastSyncError)}` : ""}
+            {t("settings:mcp.server.tools_desc")}
+            {textValue(common.lastSyncError) ? t("settings:mcp.server.last_error", { error: textValue(common.lastSyncError) }) : ""}
           </span>
         </label>
         <div className="rounded-md border">
-          <div className="border-b px-3 py-2 text-sm font-medium">工具</div>
+          <div className="border-b px-3 py-2 text-sm font-medium">{t("settings:mcp.server.tools_title")}</div>
           <div className="max-h-[28rem] overflow-auto p-2">
             {tools.length === 0 ? (
-              <div className="p-3 text-sm text-muted-foreground">启用并保存后会自动同步工具。</div>
+              <div className="p-3 text-sm text-muted-foreground">{t("settings:mcp.server.tools_empty")}</div>
             ) : null}
             {/* McpToolCard mirror — first row: name + needs-approval switch + enable switch +
                 expand chevron. Expanded body: markdown description + JSON-schema property tags.
@@ -5271,7 +5273,7 @@ function McpServerEditor({
                       {name}
                     </span>
                     <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <span>需要用户审核</span>
+                      <span>{t("settings:mcp.server.needs_approval")}</span>
                       <Switch
                         checked={needsApproval}
                         disabled={!serverEnabled}
@@ -5281,7 +5283,7 @@ function McpServerEditor({
                       />
                     </label>
                     <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <span>启用</span>
+                      <span>{t("settings:mcp.enabled")}</span>
                       <Switch
                         checked={enabled}
                         disabled={!serverEnabled}
@@ -5292,7 +5294,7 @@ function McpServerEditor({
                       type="button"
                       onClick={() => setExpandedToolName(expanded ? null : name)}
                       className="text-muted-foreground hover:text-foreground"
-                      aria-label={expanded ? "收起" : "展开"}
+                      aria-label={expanded ? t("settings:mcp.server.collapse") : t("settings:mcp.server.expand")}
                     >
                       <ChevronDownChip expanded={expanded} />
                     </button>
@@ -5334,11 +5336,11 @@ function McpServerEditor({
         </div>
         <div className="flex justify-end gap-2">
           <div className="mr-auto flex items-center px-2 text-xs text-muted-foreground">
-            {busy ? "正在自动保存..." : "已自动保存"}
+            {busy ? t("settings:mcp.autosaving") : t("settings:mcp.autosaved")}
           </div>
           <Button variant="destructive" onClick={() => void remove()} disabled={!selected.id}>
             <Trash2 className="size-4" />
-            删除
+            {t("settings:mcp.delete")}
           </Button>
         </div>
       </div>
@@ -5364,6 +5366,7 @@ function ModeInjectionEditor({
   assistant: AssistantProfile;
   onSettings: (settings: Settings) => void;
 }) {
+  const { t } = useTranslation();
   const items = (settings.modeInjections ?? []) as Array<Record<string, unknown>>;
   const [selectedId, setSelectedId] = React.useState(textValue(items[0]?.id));
   const selected =
@@ -5391,7 +5394,7 @@ function ModeInjectionEditor({
       deletePath="settings/mode-injection"
       reorderPath="settings/mode-injection/reorder"
       createItem={createModeInjection}
-      title="提示词注入"
+      title={t("settings:mcp.tab.mode")}
     />
   );
 }
@@ -5439,6 +5442,7 @@ function LorebookEntryRow({
   onChange: (next: Record<string, unknown>) => void;
   onDelete: () => void;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
   const patch = (next: Partial<Record<string, unknown>>) => onChange({ ...entry, ...next });
   const keywords = Array.isArray(entry.keywords) ? entry.keywords.map(String) : [];
@@ -5447,10 +5451,10 @@ function LorebookEntryRow({
     position === "top_of_chat" || position === "bottom_of_chat" || position === "at_depth";
   const constantActive = entry.constantActive === true;
   const triggerSummary = constantActive
-    ? "常驻激活"
+    ? t("settings:mcp.constant_active")
     : keywords.length > 0
-      ? `关键词 (${keywords.length})`
-      : "未配置触发条件";
+      ? t("settings:mcp.keywords_count", { count: keywords.length })
+      : t("settings:mcp.no_trigger");
   return (
     <div className="rounded-md border bg-background">
       <button
@@ -5466,7 +5470,7 @@ function LorebookEntryRow({
             )}
           />
           <span className="truncate text-sm font-medium">
-            {textValue(entry.name) || `条目 ${index + 1}`}
+            {textValue(entry.name) || t("settings:mcp.entry_n", { n: index + 1 })}
           </span>
           <span className="shrink-0 text-xs text-muted-foreground">· {triggerSummary}</span>
         </span>
@@ -5476,15 +5480,15 @@ function LorebookEntryRow({
         <div className="space-y-3 border-t px-3 py-3">
           <div className="grid gap-3 md:grid-cols-2">
             <label className="space-y-1">
-              <span className="text-xs font-medium text-muted-foreground">名称</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.name")}</span>
               <Input
                 value={textValue(entry.name)}
                 onChange={(event) => patch({ name: event.target.value })}
-                placeholder="（可选）条目名称"
+                placeholder={t("settings:mcp.entry_name_ph")}
               />
             </label>
             <label className="space-y-1">
-              <span className="text-xs font-medium text-muted-foreground">优先级</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.priority")}</span>
               <Input
                 type="number"
                 value={numberText(entry.priority)}
@@ -5493,23 +5497,23 @@ function LorebookEntryRow({
               />
             </label>
             <label className="space-y-1">
-              <span className="text-xs font-medium text-muted-foreground">注入位置</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.position")}</span>
               <Select value={position} onValueChange={(value) => patch({ position: value })}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="before_system_prompt">系统前</SelectItem>
-                  <SelectItem value="after_system_prompt">系统后</SelectItem>
-                  <SelectItem value="top_of_chat">对话顶部</SelectItem>
-                  <SelectItem value="bottom_of_chat">对话底部</SelectItem>
-                  <SelectItem value="at_depth">指定深度</SelectItem>
+                  <SelectItem value="before_system_prompt">{t("settings:mcp.pos.before")}</SelectItem>
+                  <SelectItem value="after_system_prompt">{t("settings:mcp.pos.after")}</SelectItem>
+                  <SelectItem value="top_of_chat">{t("settings:mcp.pos.top")}</SelectItem>
+                  <SelectItem value="bottom_of_chat">{t("settings:mcp.pos.bottom")}</SelectItem>
+                  <SelectItem value="at_depth">{t("settings:mcp.pos.depth")}</SelectItem>
                 </SelectContent>
               </Select>
             </label>
             {usesStandaloneMessage ? (
               <label className="space-y-1">
-                <span className="text-xs font-medium text-muted-foreground">角色</span>
+                <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.role")}</span>
                 <Select
                   value={textValue(entry.role) || "USER"}
                   onValueChange={(value) => patch({ role: value })}
@@ -5526,7 +5530,7 @@ function LorebookEntryRow({
             ) : null}
             {position === "at_depth" ? (
               <label className="space-y-1">
-                <span className="text-xs font-medium text-muted-foreground">注入深度</span>
+                <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.inject_depth")}</span>
                 <Input
                   type="number"
                   min={1}
@@ -5540,7 +5544,7 @@ function LorebookEntryRow({
             ) : null}
             <label className="space-y-1">
               <span className="text-xs font-medium text-muted-foreground">
-                扫描深度（最近 N 条消息）
+                {t("settings:mcp.scan_depth")}
               </span>
               <Input
                 type="number"
@@ -5555,7 +5559,7 @@ function LorebookEntryRow({
           </div>
           <label className="space-y-1">
             <span className="text-xs font-medium text-muted-foreground">
-              关键词（按 Enter 添加；未启用常驻时需匹配上下文才触发）
+              {t("settings:mcp.keywords_label")}
             </span>
             <KeywordChipInput
               keywords={keywords}
@@ -5565,7 +5569,7 @@ function LorebookEntryRow({
           </label>
           <div className="grid gap-2 md:grid-cols-3">
             <label className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
-              <span>使用正则</span>
+              <span>{t("settings:mcp.use_regex")}</span>
               <Switch
                 checked={entry.useRegex === true}
                 onCheckedChange={(checked) => patch({ useRegex: checked })}
@@ -5573,7 +5577,7 @@ function LorebookEntryRow({
               />
             </label>
             <label className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
-              <span>大小写敏感</span>
+              <span>{t("settings:mcp.case_sensitive")}</span>
               <Switch
                 checked={entry.caseSensitive === true}
                 onCheckedChange={(checked) => patch({ caseSensitive: checked })}
@@ -5581,7 +5585,7 @@ function LorebookEntryRow({
               />
             </label>
             <label className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
-              <span>常驻激活</span>
+              <span>{t("settings:mcp.constant_active")}</span>
               <Switch
                 checked={constantActive}
                 onCheckedChange={(checked) => patch({ constantActive: checked })}
@@ -5589,12 +5593,12 @@ function LorebookEntryRow({
             </label>
           </div>
           <label className="space-y-1">
-            <span className="text-xs font-medium text-muted-foreground">注入内容</span>
+            <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.inject_content")}</span>
             <Textarea
               value={textValue(entry.content)}
               onChange={(event) => patch({ content: event.target.value })}
               className="min-h-32 font-mono text-xs leading-relaxed"
-              placeholder="触发后注入的提示词"
+              placeholder={t("settings:mcp.inject_content_ph")}
             />
           </label>
           <div className="flex items-center justify-between">
@@ -5603,11 +5607,11 @@ function LorebookEntryRow({
                 checked={entry.enabled !== false}
                 onCheckedChange={(checked) => patch({ enabled: checked })}
               />
-              <span>启用本条</span>
+              <span>{t("settings:mcp.enable_entry")}</span>
             </label>
             <Button type="button" variant="ghost" size="sm" onClick={onDelete}>
               <Trash2 className="size-4" />
-              删除条目
+              {t("settings:mcp.delete_entry")}
             </Button>
           </div>
         </div>
@@ -5636,6 +5640,7 @@ function KeywordChipInput({
   disabled?: boolean;
   onChange: (next: string[]) => void;
 }) {
+  const { t } = useTranslation();
   const [value, setValue] = React.useState("");
   const commit = () => {
     const trimmed = value.trim();
@@ -5672,7 +5677,7 @@ function KeywordChipInput({
       ))}
       <input
         className="min-w-32 flex-1 bg-transparent text-xs outline-none"
-        placeholder={disabled ? "常驻激活时无需关键词" : "输入关键词后按 Enter"}
+        placeholder={disabled ? t("settings:mcp.keywords_disabled_ph") : t("settings:mcp.keywords_ph")}
         value={value}
         disabled={disabled}
         onChange={(event) => setValue(event.target.value)}
@@ -5699,6 +5704,7 @@ function LorebookEditor({
   assistant: AssistantProfile;
   onSettings: (settings: Settings) => void;
 }) {
+  const { t } = useTranslation();
   const items = (settings.lorebooks ?? []) as Array<Record<string, unknown>>;
   const [selectedId, setSelectedId] = React.useState(textValue(items[0]?.id));
   const selected =
@@ -5728,7 +5734,7 @@ function LorebookEditor({
     await api.post("settings/lorebook/detail", draft);
     dirtyRef.current = false;
     await pullSettings(onSettings);
-    if (announce) toast.success("世界书已保存");
+    if (announce) toast.success(t("settings:mcp.lorebook.saved"));
   };
   React.useEffect(() => {
     if (!dirtyRef.current) return;
@@ -5753,9 +5759,9 @@ function LorebookEditor({
     <EditorShell
       items={items}
       selectedId={selectedId}
-      emptyLabel="还没有世界书"
+      emptyLabel={t("settings:mcp.lorebook.empty")}
       onSelect={setSelectedId}
-      titleOf={(item) => textValue(item.name) || "世界书"}
+      titleOf={(item) => textValue(item.name) || t("settings:mcp.tab.lorebook")}
       onMove={async (from, to) => {
         const next = moveItem(items, from, to);
         onSettings({ ...settings, lorebooks: next as unknown as Settings["lorebooks"] });
@@ -5776,13 +5782,13 @@ function LorebookEditor({
           setDraft(next);
           dirtyRef.current = false;
         } catch (error) {
-          toast.error(error instanceof Error ? error.message : "新增世界书失败");
+          toast.error(error instanceof Error ? error.message : t("settings:mcp.lorebook.create_failed"));
         }
       }}
     >
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <div className="text-sm font-medium">世界书详情</div>
+          <div className="text-sm font-medium">{t("settings:mcp.lorebook.detail")}</div>
           <Switch
             checked={(assistant.lorebookIds ?? []).includes(String(draft.id))}
             onCheckedChange={(checked) => void bind(checked)}
@@ -5790,19 +5796,19 @@ function LorebookEditor({
         </div>
         <div className="grid gap-3 md:grid-cols-2">
           <label className="space-y-1">
-            <span className="text-xs font-medium text-muted-foreground">名称</span>
+            <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.name")}</span>
             <Input
               value={textValue(draft.name)}
               onChange={(event) => patchDraft({ name: event.target.value })}
-              placeholder="世界书名称"
+              placeholder={t("settings:mcp.lorebook.name_ph")}
             />
           </label>
           <label className="flex items-end gap-2">
             <span className="flex-1 space-y-1">
-              <span className="text-xs font-medium text-muted-foreground">启用整个世界书</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.lorebook.enable")}</span>
               <div className="rounded-md border px-3 py-2 text-sm">
                 <div className="flex items-center justify-between">
-                  <span>{draft.enabled === false ? "已禁用" : "已启用"}</span>
+                  <span>{draft.enabled === false ? t("settings:mcp.disabled") : t("settings:mcp.enabled")}</span>
                   <Switch
                     checked={draft.enabled !== false}
                     onCheckedChange={(checked) => patchDraft({ enabled: checked })}
@@ -5813,16 +5819,16 @@ function LorebookEditor({
           </label>
         </div>
         <label className="space-y-1">
-          <span className="text-xs font-medium text-muted-foreground">描述</span>
+          <span className="text-xs font-medium text-muted-foreground">{t("settings:mcp.lorebook.desc")}</span>
           <Input
             value={textValue(draft.description)}
             onChange={(event) => patchDraft({ description: event.target.value })}
-            placeholder="（可选）说明这个世界书的用途"
+            placeholder={t("settings:mcp.lorebook.desc_ph")}
           />
         </label>
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <div className="text-sm font-medium">条目（{entries.length}）</div>
+            <div className="text-sm font-medium">{t("settings:mcp.entries_count", { count: entries.length })}</div>
             <Button
               type="button"
               variant="outline"
@@ -5830,13 +5836,13 @@ function LorebookEditor({
               onClick={() => setEntries([...entries, createLorebookEntry()])}
             >
               <Plus className="size-4" />
-              添加条目
+              {t("settings:mcp.add_entry")}
             </Button>
           </div>
           <div className="space-y-2">
             {entries.length === 0 ? (
               <div className="rounded-md border border-dashed px-3 py-8 text-center text-sm text-muted-foreground">
-                还没有条目。点击"添加条目"开始。
+                {t("settings:mcp.no_entries")}
               </div>
             ) : null}
             {entries.map((entry, index) => (
@@ -5854,7 +5860,7 @@ function LorebookEditor({
         </div>
         <div className="flex justify-end gap-2">
           <div className="mr-auto flex items-center px-2 text-xs text-muted-foreground">
-            已自动保存
+            {t("settings:mcp.autosaved")}
           </div>
           <Button
             variant="destructive"
@@ -5864,7 +5870,7 @@ function LorebookEditor({
             }}
           >
             <Trash2 className="size-4" />
-            删除世界书
+            {t("settings:mcp.lorebook.delete")}
           </Button>
         </div>
       </div>
@@ -5906,6 +5912,7 @@ function QuickMessageEditor({
   assistant: AssistantProfile;
   onSettings: (settings: Settings) => void;
 }) {
+  const { t } = useTranslation();
   const items = (settings.quickMessages ?? []) as unknown as Array<Record<string, unknown>>;
   const [selectedId, setSelectedId] = React.useState(textValue(items[0]?.id));
   const selected = items.find((item) => String(item.id) === selectedId) ??
@@ -5930,7 +5937,7 @@ function QuickMessageEditor({
       await api.post("settings/quick-message/detail", draft);
       dirtyRef.current = false;
       await pullSettings(onSettings);
-      if (announce) toast.success("快捷消息已保存");
+      if (announce) toast.success(t("settings:mcp.quick.saved"));
     },
     [draft, onSettings],
   );
@@ -5959,9 +5966,9 @@ function QuickMessageEditor({
     <EditorShell
       items={items}
       selectedId={selectedId}
-      emptyLabel="还没有快捷消息"
+      emptyLabel={t("settings:mcp.quick.empty")}
       onSelect={setSelectedId}
-      titleOf={(item) => textValue(item.title) || "快捷消息"}
+      titleOf={(item) => textValue(item.title) || t("settings:mcp.tab.quick")}
       onMove={async (from, to) => {
         const next = moveItem(items, from, to);
         onSettings({ ...settings, quickMessages: next as unknown as Settings["quickMessages"] });
@@ -5970,7 +5977,7 @@ function QuickMessageEditor({
         });
       }}
       onCreate={() => {
-        const next = { id: crypto.randomUUID(), title: "快捷消息", content: "" };
+        const next = { id: crypto.randomUUID(), title: t("settings:mcp.tab.quick"), content: "" };
         setSelectedId(String(next.id));
         setDraft(next);
         dirtyRef.current = true;
@@ -5978,7 +5985,7 @@ function QuickMessageEditor({
     >
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <div className="text-sm font-medium">快捷消息详情</div>
+          <div className="text-sm font-medium">{t("settings:mcp.quick.detail")}</div>
           <Switch
             checked={(assistant.quickMessageIds ?? []).includes(String(draft.id))}
             onCheckedChange={(checked) => void bind(checked)}
@@ -5987,17 +5994,17 @@ function QuickMessageEditor({
         <Input
           value={textValue(draft.title)}
           onChange={(event) => patchDraft({ title: event.target.value })}
-          placeholder="标题"
+          placeholder={t("settings:mcp.quick.title")}
         />
         <Textarea
           value={textValue(draft.content)}
           onChange={(event) => patchDraft({ content: event.target.value })}
           className="min-h-52"
-          placeholder="内容"
+          placeholder={t("settings:mcp.quick.content")}
         />
         <div className="flex justify-end gap-2">
           <div className="mr-auto flex items-center px-2 text-xs text-muted-foreground">
-            已自动保存
+            {t("settings:mcp.autosaved")}
           </div>
           <Button
             variant="destructive"
@@ -6007,7 +6014,7 @@ function QuickMessageEditor({
             }}
           >
             <Trash2 className="size-4" />
-            删除
+            {t("settings:mcp.delete")}
           </Button>
         </div>
       </div>
