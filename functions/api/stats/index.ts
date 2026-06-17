@@ -127,8 +127,9 @@ export const onRequest = async (context) => {
       "SELECT version, COUNT(*) AS count FROM pings WHERE date = ? " + allAnd + " GROUP BY version ORDER BY count DESC"
     ).bind(today, ...allBinds).all();
 
-    // ── 累计用户增长曲线(全期,按首次出现日累计 distinct 设备)──
-    const growth = await computeGrowth(DB, filterAnd, filterBinds);
+    // ── 累计用户增长曲线(按首次出现日累计 distinct 设备;叠用户群 cohort,
+    //    使"总用户增长"折线也响应全部筛选)──
+    const growth = await computeGrowth(DB, allAnd, allBinds);
 
     // ── 留存:新用户 cohort + 全量滚动留存 ──
     const retention = await computeRetention(DB, today, 60, filterAnd, filterBinds);
