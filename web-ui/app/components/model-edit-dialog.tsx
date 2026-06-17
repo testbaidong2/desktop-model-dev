@@ -56,11 +56,11 @@ const MODALITY_OPTIONS: { value: ModelModality; label: string }[] = [
 ];
 
 const ABILITY_OPTIONS: { value: ModelAbility; label: string; hint: string }[] = [
-  { value: "TOOL", label: "工具调用", hint: "启用后请求才会带 tools 字段（server.ts:6187 门控）" },
+  { value: "TOOL", label: "工具调用", hint: "启用后请求才会带 tools 字段" },
   {
     value: "REASONING",
     label: "推理输出",
-    hint: "启用后请求才会带 thinking/reasoning 字段（server.ts:6192 门控）",
+    hint: "启用后请求才会带 thinking/reasoning 字段",
   },
 ];
 
