@@ -1140,7 +1140,6 @@
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
-    transition: scrollbar-color 0.2s ease;
   }
 
   *::-webkit-scrollbar {

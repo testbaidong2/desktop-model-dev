@@ -567,7 +567,7 @@ function startAnalytics(): void {
 // MUST be kept in sync with web-ui/src-tauri/tauri.conf.json's `version` field. The update
 // checker compares this against the latest GitHub release tag and the version is also shown
 // verbatim in the About page. If you bump tauri.conf.json's version, bump this too.
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.2.1";
 
 type GithubRelease = {
   tag_name?: string;
@@ -15278,9 +15278,28 @@ async function routeStatic(url: URL) {
   const requested = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
   const target = resolve(staticRoot, requested);
   if (target.startsWith(staticRoot) && existsSync(target)) {
-    return new Response(Bun.file(target), { headers: { "Content-Type": mime(target) } });
+    return new Response(Bun.file(target), {
+      headers: { "Content-Type": mime(target), "Cache-Control": staticCacheControl(url.pathname, target) },
+    });
   }
-  return new Response(Bun.file(join(staticRoot, "index.html")), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+  // SPA fallback (index.html): 绝不缓存。覆盖安装后 WebView2 每次都拿最新的 index.html,
+  // 它引用的 hash 化 css/js 会自然跟到新版本,彻底杜绝"装了新版还在跑旧前端"的缓存污染。
+  return new Response(Bun.file(join(staticRoot, "index.html")), {
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
+
+// 静态资源 Cache-Control 策略,解决覆盖安装时 WebView2 缓存旧前端的问题:
+//   index.html → no-store:唯一被直接请求的"无 hash"入口,只要它最新,引用的
+//               /assets/*.<hash>.css|js 会自动指向新版本。
+//   /assets/* → immutable + 1 年:Vite 按内容 hash 命名,内容变则文件名变,可安全永久缓存。
+//   其余(favicon 等,无 hash)→ 1 小时短缓存兜底。
+function staticCacheControl(pathname: string, target: string): string {
+  if (target.endsWith("index.html") || pathname === "/") return "no-store";
+  if (pathname.startsWith("/assets/") && /\.(css|js|mjs|woff2?|ttf|otf|wasm)$/i.test(target)) {
+    return "public, max-age=31536000, immutable";
+  }
+  return "public, max-age=3600";
 }
 
 // Tolerate both layouts: when run via `bun run server.ts`, argv[0..1] are bun + script;
