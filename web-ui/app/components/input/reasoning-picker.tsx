@@ -249,19 +249,30 @@ export function ReasoningPickerButtonImpl({ disabled = false, className }: Reaso
               }}
             />
 
-            {/* Tick labels */}
-            <div className="flex justify-between">
-              {reasoningPresets.map((preset, i) => (
-                <span
-                  key={preset.key}
-                  className={cn(
-                    "flex-1 text-center text-[10px] transition-colors",
-                    i === localIndex ? "text-primary font-medium" : "text-muted-foreground",
-                  )}
-                >
-                  {preset.label}
-                </span>
-              ))}
+            {/* Tick labels — 标签中心对齐 Slider 圆头(Radix thumb 在 i/(n-1) 处)。
+                之前用 flex-1 text-center,6 等分中心 ((i+0.5)/6) 与圆头节点 (i/5) 错位,
+                中间档位的圆头明显偏离文字。改为绝对定位:中间档位 translateX(-50%) 让中心
+                精确落在圆头上,首尾档位用边缘对齐保持"在开头/结尾"的视觉。 */}
+            <div className="relative h-3.5">
+              {reasoningPresets.map((preset, i) => {
+                const last = reasoningPresets.length - 1;
+                return (
+                  <span
+                    key={preset.key}
+                    className={cn(
+                      "absolute top-0 text-[10px] leading-none whitespace-nowrap transition-colors",
+                      i === localIndex ? "text-primary font-medium" : "text-muted-foreground",
+                    )}
+                    style={{
+                      left: `${(i / last) * 100}%`,
+                      transform:
+                        i === 0 ? "translateX(0)" : i === last ? "translateX(-100%)" : "translateX(-50%)",
+                    }}
+                  >
+                    {preset.label}
+                  </span>
+                );
+              })}
             </div>
           </div>
         </div>
