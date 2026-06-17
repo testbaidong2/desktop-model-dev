@@ -9,7 +9,9 @@
 export const onRequest = async (context) => {
   const url = new URL(context.request.url);
   const DB = context.env.DB;
-  const days = Math.min(parseInt(url.searchParams.get("days") ?? "30", 10), 365);
+  const daysParam = Math.min(parseInt(url.searchParams.get("days") ?? "30", 10), 365);
+  const startParam = url.searchParams.get("start");   // 可选 YYYY-MM-DD(自定义起点)
+  const endParam = url.searchParams.get("end");       // 可选 YYYY-MM-DD(自定义终点)
   const osFilter = (url.searchParams.get("os") ?? "all").toLowerCase(); // all|win|linux|mac
   const verFilter = url.searchParams.get("version") ?? "all";
 
@@ -27,10 +29,13 @@ export const onRequest = async (context) => {
     const latestRow = await DB.prepare(
       "SELECT MAX(date) AS d FROM pings" + filterWhere
     ).bind(...filterBinds).first();
-    const today = latestRow?.d ?? new Date().toISOString().slice(0, 10);
+    const today = endParam && /^\d{4}-\d{2}-\d{2}$/.test(endParam) ? endParam : (latestRow?.d ?? new Date().toISOString().slice(0, 10));
+    const days = startParam && /^\d{4}-\d{2}-\d{2}$/.test(startParam)
+      ? Math.max(1, Math.round((new Date(today) - new Date(startParam)) / 86400000) + 1)
+      : daysParam;
 
     // ── 日趋势:直接 GROUP BY date(支持筛选 + returning_users)──
-    const startDate = addDays(today, -(days - 1));
+    const startDate = startParam && /^\d{4}-\d{2}-\d{2}$/.test(startParam) ? startParam : addDays(today, -(days - 1));
     const trendsQ = await DB.prepare(
       "SELECT date, " +
         "COUNT(*) AS dau, " +
@@ -100,6 +105,34 @@ export const onRequest = async (context) => {
     const rollingRetention = await computeRollingRetention(DB, today, 14, filterAnd, filterBinds);
     const avgRetention = computeAvgRetention(retention.cohorts);
 
+    // ── 环比(本期 vs 等长上期):KPI 卡做"较上期 ±%"──
+    const prevStart = addDays(today, -(2 * days - 1));
+    const prevEnd = addDays(today, -days);
+    const popRow = await DB.prepare(
+      "SELECT " +
+        "(SELECT COUNT(DISTINCT device_id) FROM pings WHERE date BETWEEN ? AND ? " + filterAnd + ") AS cur_users, " +
+        "(SELECT COUNT(DISTINCT device_id) FROM pings WHERE date BETWEEN ? AND ? " + filterAnd + ") AS prev_users, " +
+        "(SELECT SUM(CASE WHEN first_seen THEN 1 ELSE 0 END) FROM pings WHERE date BETWEEN ? AND ? " + filterAnd + ") AS prev_new, " +
+        "(SELECT SUM(msg_count) FROM pings WHERE date BETWEEN ? AND ? " + filterAnd + ") AS prev_msgs, " +
+        "(SELECT COUNT(*) FROM pings WHERE date BETWEEN ? AND ? " + filterAnd + ") AS prev_user_days"
+    ).bind(
+      startDate, today, ...filterBinds,
+      prevStart, prevEnd, ...filterBinds,
+      prevStart, prevEnd, ...filterBinds,
+      prevStart, prevEnd, ...filterBinds,
+      prevStart, prevEnd, ...filterBinds
+    ).first();
+
+    // ── 流失 / 复活(最近 7 天 vs 前 7 天)──
+    const churn = await computeChurn(DB, today, filterAnd, filterBinds);
+
+    // ── 参与度分位:中位数 / P90 / 均值(只看有消息的活跃设备)──
+    // 均值会被重度用户拉高,中位数才是"典型用户"的真实强度。
+    const percentiles = await computePercentiles(DB, startDate, today, filterAnd, filterBinds);
+
+    // ── 版本采用曲线(近 30 天每日每版本 DAU;不受筛选影响,反映真实升级速度)──
+    const versionTrend = await computeVersionTrend(DB, today);
+
     // ── 最近活跃设备列表(version/os 取该设备最新一条,与本次筛选无关)──
     const recentUsers = await DB.prepare(
       "SELECT device_id, " +
@@ -131,6 +164,16 @@ export const onRequest = async (context) => {
       rollingRetention,
       growth,
       recentUsers: recentUsers.results ?? [],
+      pop: {
+        curUsers: popRow?.cur_users ?? 0,
+        prevUsers: popRow?.prev_users ?? 0,
+        prevNew: popRow?.prev_new ?? 0,
+        prevMsgs: popRow?.prev_msgs ?? 0,
+        prevUserDays: popRow?.prev_user_days ?? 0,
+      },
+      churn,
+      percentiles,
+      versionTrend,
       filter: { os: osFilter, version: verFilter, asOf: today },
     }), {
       headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
@@ -238,11 +281,12 @@ async function computeRollingRetention(DB, asOf, baseDays, filterAnd, filterBind
   }
 }
 
-// 聚合新用户 cohort 的 D1/D7/D30 加权平均(只取已"满龄"的 cohort,避免新日拉低均值)。
+// 聚合新用户 cohort 的 D1/D3/D7/D14/D30 加权平均(只取已"满龄"的 cohort,避免新日拉低均值)。
+// cohort 本身已计算这些 offset,这里只是按 cohort 规模加权汇总,无额外查询。
 function computeAvgRetention(cohorts) {
-  const result = { d1: null, d7: null, d30: null };
+  const result = { d1: null, d3: null, d7: null, d14: null, d30: null };
   if (!cohorts?.length) return result;
-  for (const [key, offset] of [["d1", 1], ["d7", 7], ["d30", 30]]) {
+  for (const [key, offset] of [["d1", 1], ["d3", 3], ["d7", 7], ["d14", 14], ["d30", 30]]) {
     const valid = cohorts.filter((c) => c.retention[offset] != null);
     if (!valid.length) continue;
     const totalUsers = valid.reduce((s, c) => s + c.size, 0);
@@ -250,4 +294,77 @@ function computeAvgRetention(cohorts) {
     result[key] = totalUsers > 0 ? Math.round(weighted / totalUsers) : null;
   }
   return result;
+}
+
+// 流失 / 复活分析:把"最近 7 天"与"前 7 天"对比。
+//   retained  = 两窗都活跃的设备
+//   churned   = 前窗活跃、最近没回来(流失)
+//   resurrected = 最近活跃、前窗不在、但更早出现过(复活)
+async function computeChurn(DB, asOf, filterAnd, filterBinds) {
+  try {
+    const rStart = addDays(asOf, -6), rEnd = asOf;            // 最近 7 天
+    const pStart = addDays(asOf, -13), pEnd = addDays(asOf, -7); // 前 7 天
+    const before = addDays(asOf, -14);                         // 早于前窗
+    const recentQ = await DB.prepare(
+      "SELECT COUNT(DISTINCT device_id) AS c FROM pings WHERE date BETWEEN ? AND ? " + filterAnd
+    ).bind(rStart, rEnd, ...filterBinds).first();
+    const priorQ = await DB.prepare(
+      "SELECT COUNT(DISTINCT device_id) AS c FROM pings WHERE date BETWEEN ? AND ? " + filterAnd
+    ).bind(pStart, pEnd, ...filterBinds).first();
+    const retainedQ = await DB.prepare(
+      "SELECT COUNT(DISTINCT device_id) AS c FROM pings WHERE date BETWEEN ? AND ? " + filterAnd +
+      " AND device_id IN (SELECT device_id FROM pings WHERE date BETWEEN ? AND ? " + filterAnd + ")"
+    ).bind(pStart, pEnd, ...filterBinds, rStart, rEnd, ...filterBinds).first();
+    const resurrectedQ = await DB.prepare(
+      "SELECT COUNT(DISTINCT device_id) AS c FROM pings WHERE date BETWEEN ? AND ? " + filterAnd +
+      " AND device_id NOT IN (SELECT device_id FROM pings WHERE date BETWEEN ? AND ? " + filterAnd + ")" +
+      " AND device_id IN (SELECT device_id FROM pings WHERE date < ? " + filterAnd + ")"
+    ).bind(rStart, rEnd, ...filterBinds, pStart, pEnd, ...filterBinds, before, ...filterBinds).first();
+    const recent = recentQ?.c ?? 0, prior = priorQ?.c ?? 0, retained = retainedQ?.c ?? 0, resurrected = resurrectedQ?.c ?? 0;
+    return {
+      recent, prior, retained, resurrected,
+      churned: Math.max(0, prior - retained),
+      churnRate: prior > 0 ? Math.round((prior - retained) / prior * 100) : null,
+    };
+  } catch (err) {
+    console.error("churn error:", err);
+    return null;
+  }
+}
+
+// 活跃用户当日消息数的分位(排序后取中位 / P90)。均值被重度用户拉高,
+// 中位数才能反映"典型用户"的真实参与强度。
+async function computePercentiles(DB, start, end, filterAnd, filterBinds) {
+  try {
+    const rows = await DB.prepare(
+      "SELECT msg_count FROM pings WHERE date BETWEEN ? AND ? AND msg_count > 0 " + filterAnd + " ORDER BY msg_count"
+    ).bind(start, end, ...filterBinds).all();
+    const arr = (rows.results ?? []).map((r) => r.msg_count);
+    if (!arr.length) return { count: 0, median: 0, p90: 0, mean: 0 };
+    const sum = arr.reduce((s, n) => s + n, 0);
+    return {
+      count: arr.length,
+      median: arr[Math.floor(arr.length / 2)],
+      p90: arr[Math.min(arr.length - 1, Math.floor(arr.length * 0.9))],
+      mean: Math.round((sum / arr.length) * 10) / 10,
+    };
+  } catch (err) {
+    console.error("percentiles error:", err);
+    return null;
+  }
+}
+
+// 版本采用曲线:近 30 天每日每版本 DAU。刻意不套筛选——这一图专门反映"新版本
+// 滚动升级的速度",套了版本筛选就没意义了。
+async function computeVersionTrend(DB, asOf) {
+  try {
+    const start = addDays(asOf, -29);
+    const rows = await DB.prepare(
+      "SELECT date, version, COUNT(*) AS c FROM pings WHERE date BETWEEN ? AND ? GROUP BY date, version ORDER BY date"
+    ).bind(start, asOf).all();
+    return rows.results ?? [];
+  } catch (err) {
+    console.error("versionTrend error:", err);
+    return [];
+  }
 }
