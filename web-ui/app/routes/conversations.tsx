@@ -1,6 +1,6 @@
 import * as React from "react";
 
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 
 import {
   ConversationQuickJump,
@@ -861,20 +861,34 @@ const ConversationTimeline = React.memo(
     const [topEndIndex, setTopEndIndex] = React.useState(0);
     const didInitialScrollRef = React.useRef<string | null>(null);
 
-    // 进入会话(或切换会话):首次数据就绪时滚到最后一条。Virtuoso 默认初始在顶部;
-    // 流式新消息的自动跟底由 followOutput 处理,这里只负责"进入会话定位到底部"。
+    // 搜索命中跳转时 URL 带 ?msg=<messageId>,用它定位到命中那条消息(对齐安卓)。
+    const [searchParams] = useSearchParams();
+    const focusMessageId = searchParams.get("msg");
+
+    // 进入会话(或切换会话):首次数据就绪时定位。Virtuoso 默认初始在顶部;
+    // 流式新消息的自动跟底由 followOutput 处理,这里只负责"进入会话定位"。
     React.useEffect(() => {
       if (!activeId || detailLoading || detailError || selectedNodeMessages.length === 0) {
         return;
       }
-      if (didInitialScrollRef.current === activeId) return;
-      didInitialScrollRef.current = activeId;
-      const lastIndex = selectedNodeMessages.length - 1;
+      // activeId + focusMessageId 组合作为"已定位"标记:换会话或换聚焦消息都重新定位;
+      // 同会话无聚焦消息时只定位一次(避免流式新消息的 effect 重跑打断用户手动滚动)。
+      const scrollKey = `${activeId}:${focusMessageId ?? ""}`;
+      if (didInitialScrollRef.current === scrollKey) return;
+      didInitialScrollRef.current = scrollKey;
       const frame = window.requestAnimationFrame(() => {
+        if (focusMessageId) {
+          const idx = selectedNodeMessages.findIndex((m) => m.message.id === focusMessageId);
+          if (idx >= 0) {
+            virtuosoRef.current?.scrollToIndex({ index: idx, behavior: "auto", align: "center" });
+            return;
+          }
+        }
+        const lastIndex = selectedNodeMessages.length - 1;
         virtuosoRef.current?.scrollToIndex({ index: lastIndex, behavior: "auto", align: "end" });
       });
       return () => window.cancelAnimationFrame(frame);
-    }, [activeId, detailError, detailLoading, selectedNodeMessages.length]);
+    }, [activeId, detailError, detailLoading, focusMessageId, selectedNodeMessages]);
 
     return (
       <div className="relative flex-1 min-h-0">
@@ -1129,10 +1143,14 @@ function ConversationsPageInner() {
   const displaySuggestions = showSuggestions ? chatSuggestions : EMPTY_SUGGESTIONS;
 
   const handleSelect = React.useCallback(
-    (id: string) => {
+    (id: string, messageId?: string) => {
       setActiveId(id);
-      if (routeId !== id) {
-        navigate(`/c/${id}`);
+      // 搜索命中带 messageId 时通过 URL query 传给详情页,加载完成后滚到那条消息位置
+      // (对齐安卓);普通点击不带 messageId,维持原"进入会话滚底部"行为。
+      const target = messageId ? `/c/${id}?msg=${messageId}` : `/c/${id}`;
+      // 同会话也要 navigate 以更新 query(搜索当前会话的某条消息)
+      if (routeId !== id || messageId) {
+        navigate(target);
       }
     },
     [navigate, routeId, setActiveId],

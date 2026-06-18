@@ -11,7 +11,7 @@ import api from "~/services/api";
 import type { MessageSearchResultDto } from "~/types";
 
 export interface ConversationSearchButtonProps {
-  onSelect: (id: string) => void;
+  onSelect: (id: string, messageId?: string) => void;
 }
 
 function SnippetText({ snippet }: { snippet: string }) {
@@ -174,7 +174,7 @@ export function ConversationSearchButton({ onSelect }: ConversationSearchButtonP
                   type="button"
                   className="flex w-full items-start gap-3 rounded-md px-2 py-2 text-left transition hover:bg-muted"
                   onClick={() => {
-                    onSelect(item.conversationId);
+                    onSelect(item.conversationId, item.messageId);
                     setOpen(false);
                   }}
                 >

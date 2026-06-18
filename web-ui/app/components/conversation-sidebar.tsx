@@ -217,7 +217,7 @@ export interface ConversationSidebarProps {
   assistants: AssistantProfile[];
   assistantTags: AssistantTag[];
   currentAssistantId: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, messageId?: string) => void;
   onAssistantChange: (assistantId: string) => Promise<void>;
   onPin?: (id: string) => Promise<void>;
   onRegenerateTitle?: (id: string) => Promise<void>;
@@ -233,7 +233,7 @@ interface ConversationListRowProps {
   conversation: ConversationListDto;
   isActive: boolean;
   assistants: AssistantProfile[];
-  onSelect: (id: string) => void;
+  onSelect: (id: string, messageId?: string) => void;
   onPin?: (id: string) => Promise<void>;
   onRegenerateTitle?: (id: string) => Promise<void>;
   onMoveToAssistant?: (id: string, assistantId: string) => Promise<void>;
