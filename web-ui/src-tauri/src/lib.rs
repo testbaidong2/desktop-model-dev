@@ -329,10 +329,34 @@ fn launch_installer(path: String) -> Result<(), String> {
     if !ext_ok {
         return Err(format!("Refusing to launch non-exe: {}", installer_path.display()));
     }
-    std::process::Command::new(&installer_path)
-        .spawn()
+    spawn_installer(&installer_path)
         .map(|_| ())
         .map_err(|e| format!("Failed to launch installer: {e}"))
+}
+
+/// 启动安装器为独立进程,脱离壳可能所在的 Job Object。
+///
+/// 壳(rikkahub.exe)自己不入它给 sidecar 建的 KILL_ON_JOB_CLOSE job,正常双击启动时安装器
+/// 不会被连坐;但若壳被外部放进 job(从 IDE / 沙箱 / 进程监视器拉起),Windows 会自动把安装器
+/// 加入同一 job,壳退出时 KILL_ON_JOB_CLOSE 会连坐杀掉安装器。CREATE_BREAKAWAY_FROM_JOB 让
+/// 子进程脱离 job;若所处 job 不允许 breakaway,回退普通 spawn 保证安装器至少能启动。
+///
+/// 注意:这里只用 CreateProcess 不用 ShellExecute("runas")——当前 installMode=currentUser,
+/// 安装器 manifest 是 asInvoker,CreateProcess 直接启动不弹 UAC;改 runas 会强制提升、每次
+/// 更新都弹 UAC,是 UX 退化。将来 installMode 改 perMachine/both 再换 ShellExecuteW。
+#[cfg(windows)]
+fn spawn_installer(installer: &Path) -> std::io::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    std::process::Command::new(installer)
+        .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
+        .spawn()
+        .or_else(|_| std::process::Command::new(installer).creation_flags(0).spawn())
+}
+
+#[cfg(not(windows))]
+fn spawn_installer(installer: &Path) -> std::io::Result<std::process::Child> {
+    std::process::Command::new(installer).spawn()
 }
 
 /// Modal error dialog shown during startup when the sidecar can't come up. We use
